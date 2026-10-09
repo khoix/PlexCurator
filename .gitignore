@@ -1,0 +1,8 @@
+web/node_modules/
+web/.vite/
+# Keep prebuilt UI tracked so ./run.sh works without Node.js.
+backend/__pycache__/
+tests/__pycache__/
+data/
+.env
+*.pyc

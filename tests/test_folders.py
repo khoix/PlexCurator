@@ -1,5 +1,6 @@
 """Folder safety and full movie/series rename integration tests, no Plex writes."""
 import json
+import errno
 import sqlite3
 from pathlib import Path
 import sys
@@ -59,6 +60,55 @@ class TestFolderBridge(unittest.TestCase):
         self.assertTrue(self.file.exists())
         self.assertEqual((self.movie/'subtitles.srt').read_text(),'subtitles')
 
+    def test_einval_directory_fallback_succeeds(self):
+        """NAS/FUSE/SMB mounts can reject RENAME_NOREPLACE with EINVAL."""
+        real_func = remote_bridge.ctypes.CDLL(None, use_errno=True).renameat2
+        def reject_directories(srcfd, src, dstfd, dst, flags):
+            if src.decode().endswith('/The Matrix (1998)'):
+                return -1
+            return real_func(srcfd, src, dstfd, dst, flags)
+        with patch.object(remote_bridge.ctypes,'get_errno',return_value=errno.EINVAL), \
+             patch.object(remote_bridge.ctypes,'CDLL') as fake_libc:
+            fake_libc.return_value.renameat2.side_effect=reject_directories
+            result=remote_bridge.folder_and_file_rename(self.args,True)
+        self.assertEqual(result['method'],'guarded-file-and-folder-rename-fallback')
+        self.assertTrue(Path(result['new_file']).exists())
+        self.assertFalse(self.movie.exists())
+        self.assertEqual((self.root/'The Matrix (1999)'/'subtitles.srt').read_text(),'subtitles')
+
+    def test_einval_fallback_rechecks_collision_and_rolls_back_file(self):
+        destination=self.root/'The Matrix (1999)'
+        real_func=remote_bridge.ctypes.CDLL(None,use_errno=True).renameat2
+        def reject_and_inject(srcfd,src,dstfd,dst,flags):
+            if src.decode().endswith('/The Matrix (1998)'):
+                destination.mkdir()
+                (destination/'existing.nfo').write_text('do not overwrite')
+                return -1
+            return real_func(srcfd,src,dstfd,dst,flags)
+        with patch.object(remote_bridge.ctypes,'get_errno',return_value=errno.EINVAL), \
+             patch.object(remote_bridge.ctypes,'CDLL') as fake_libc:
+            fake_libc.return_value.renameat2.side_effect=reject_and_inject
+            with self.assertRaisesRegex(ValueError,'Destination folder appeared'):
+                remote_bridge.folder_and_file_rename(self.args,True)
+        self.assertEqual((destination/'existing.nfo').read_text(),'do not overwrite')
+        self.assertTrue(self.file.exists())
+        self.assertFalse((self.movie/'The Matrix (1999).mkv').exists())
+
+    def test_eacces_does_not_fallback_or_move(self):
+        real_func=remote_bridge.ctypes.CDLL(None,use_errno=True).renameat2
+        def deny_directory(srcfd,src,dstfd,dst,flags):
+            if src.decode().endswith('/The Matrix (1998)'):
+                return -1
+            return real_func(srcfd,src,dstfd,dst,flags)
+        with patch.object(remote_bridge.ctypes,'get_errno',return_value=errno.EACCES), \
+             patch.object(remote_bridge.ctypes,'CDLL') as fake_libc, \
+             patch.object(remote_bridge.os,'rename',wraps=remote_bridge.os.rename) as fallback:
+            fake_libc.return_value.renameat2.side_effect=deny_directory
+            with self.assertRaises(OSError):
+                remote_bridge.folder_and_file_rename(self.args,True)
+            fallback.assert_not_called()
+        self.assertTrue(self.file.exists())
+
     def test_roots_and_traversal_rejected(self):
         with self.assertRaisesRegex(ValueError,'BELOW an allowed media root'):
             remote_bridge.folder_and_file_rename({**self.args,'folder_source':str(self.root),'source':'','new_name':''},False)
@@ -79,7 +129,7 @@ class TestFolderBridge(unittest.TestCase):
                 (self.root/'The Matrix (1999)').mkdir()
             return result
         with patch.object(remote_bridge,'media_rename',side_effect=renamed):
-            with self.assertRaises(OSError):
+            with self.assertRaises((OSError, ValueError)):
                 remote_bridge.folder_and_file_rename(self.args,True)
         self.assertTrue(self.file.exists())
         self.assertFalse((self.movie/'The Matrix (1999).mkv').exists())

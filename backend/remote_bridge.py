@@ -131,6 +131,53 @@ def media_rename(args, apply):
     return {'old_file': str(src), 'new_file': str(target), 'applied': apply, 'method':method}
 
 
+def rename_directory_with_fallback(folder, dest_dir):
+    """Rename a directory on the same parent, using NOREPLACE where supported.
+
+    Certain SMB/NFS/FUSE mounts reject renameat2(RENAME_NOREPLACE) with
+    EINVAL or EOPNOTSUPP, even though ordinary directory renames work.
+    On those mounts, use a same-directory os.rename only after rechecking
+    the source and destination. This fallback is not race-free against
+    processes *outside* Curator creating the same destination simultaneously.
+    """
+    folder = pathlib.Path(folder)
+    dest_dir = pathlib.Path(dest_dir)
+    if folder.parent != dest_dir.parent or folder == dest_dir:
+        raise ValueError('Folder rename must stay in the same parent directory')
+    if dest_dir.exists() or dest_dir.is_symlink():
+        raise ValueError('Destination folder already exists; refusing to merge or overwrite')
+    if not folder.is_dir() or folder.is_symlink():
+        raise ValueError('Source folder is missing or is not a real directory')
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        func = libc.renameat2
+    except AttributeError:
+        func = None
+
+    if func is not None:
+        func.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                         ctypes.c_char_p, ctypes.c_uint]
+        func.restype = ctypes.c_int
+        if func(-100, os.fsencode(folder), -100, os.fsencode(dest_dir), 1) == 0:
+            return 'atomic-folder-rename'
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise ValueError('Destination folder already exists; refusing to merge or overwrite')
+        if code not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise OSError(code, os.strerror(code), str(folder))
+
+    # POSIX os.rename is atomic within the same filesystem but cannot
+    # guarantee NOREPLACE against an external process racing this check.
+    # The checks above are repeated as close to the actual rename as possible.
+    if dest_dir.exists() or dest_dir.is_symlink():
+        raise ValueError('Destination folder appeared during rename; refusing to overwrite')
+    if not folder.is_dir() or folder.is_symlink():
+        raise ValueError('Source folder changed during rename; refusing to continue')
+    os.rename(folder, dest_dir)
+    return 'guarded-folder-rename-fallback'
+
+
 def folder_and_file_rename(args, apply):
     """One guarded request for a movie file and/or its containing folder.
 
@@ -168,13 +215,8 @@ def folder_and_file_rename(args, apply):
             raise ValueError('Destination folder already exists; refusing to merge or overwrite')
         if not os.access(folder.parent, os.W_OK | os.X_OK):
             raise ValueError('SSH user cannot rename folders in this parent directory')
-        # No hardlink fallback is possible/safe for directories.
-        try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            if not hasattr(libc, 'renameat2'):
-                raise ValueError('Protected directory rename unavailable on this Plex filesystem')
-        except OSError as error:
-            raise ValueError(f'Protected directory rename unavailable: {error}')
+        # Actual rename support is checked at apply time. Some NAS mounts
+        # expose renameat2 but reject RENAME_NOREPLACE for directories.
     else:
         dest_dir = folder
 
@@ -207,15 +249,11 @@ def folder_and_file_rename(args, apply):
             file_moved = True
             result['method'] = file_op['method']
         if new_dirname:
-            # rename_without_overwrite checks EEXIST atomically. Explicitly disallow hardlink fallback.
-            libc=ctypes.CDLL(None, use_errno=True)
-            func=libc.renameat2
-            func.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
-            func.restype=ctypes.c_int
-            if func(-100,os.fsencode(folder),-100,os.fsencode(dest_dir),1) != 0:
-                code=ctypes.get_errno()
-                raise OSError(code,os.strerror(code),str(folder))
-            result['method'] = 'atomic-folder-rename' if not new_filename else 'atomic-file-and-folder-rename'
+            folder_method = rename_directory_with_fallback(folder, dest_dir)
+            result['method'] = (
+                folder_method if not new_filename else
+                ('atomic-file-and-folder-rename' if folder_method == 'atomic-folder-rename'
+                 else 'guarded-file-and-folder-rename-fallback'))
         result['applied']=True
         return result
     except Exception as err:

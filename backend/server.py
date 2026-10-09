@@ -3,7 +3,7 @@
 import argparse, csv, io, json, os, re, tempfile, threading, time, urllib.parse, urllib.request, urllib.error, xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from engine import DB_DEFAULT, import_csv, import_db, diagnose, file_title, filename_proposal, folder_proposal, derive_show_folders, tmdb_lookup, tvmaze_lookup, wikidata_lookup, normal_item, year_evidence
+from engine import DB_DEFAULT, import_csv, import_db, diagnose, file_title, filename_proposal, folder_proposal, derive_show_folders, tmdb_lookup, tvmaze_lookup, wikidata_lookup, normal_item, year_evidence, norm, similar
 from ssh_transport import SSHTransport
 from remote_bridge import media_rename, folder_and_file_rename
 
@@ -256,6 +256,73 @@ def atomic_json(path, data):
     os.replace(name,path)
 
 
+
+def batch_provider_candidates(item):
+    """Consult film/show metadata providers before proposing release years."""
+    choices,errors=[],[]
+    if item['type']=='Movie':
+        sources=[('TMDB',lambda:tmdb_lookup(item,TMDB_TOKEN))] if TMDB_TOKEN else []
+        sources.append(('Wikidata',lambda:wikidata_lookup(item)))
+    elif item['type']=='Show':
+        sources=[('TVmaze',lambda:tvmaze_lookup(item))]
+        if TMDB_TOKEN:sources.append(('TMDB',lambda:tmdb_lookup(item,TMDB_TOKEN)))
+    else:return [],['Only movies and shows have a release year']
+    for name,lookup in sources:
+        try:choices.extend(lookup())
+        except (OSError,ValueError) as exc:errors.append(f'{name}: {exc}')
+    return choices,errors
+
+
+def select_provider_year(item,candidates):
+    """Conservative title-based verification; do not trust current Plex year."""
+    import datetime
+    if item.get('type') not in ('Movie','Show'):
+        return None,'Only movies and TV shows are supported'
+    labels=[str(item.get('plex_title') or '')]
+    if item['type']=='Movie':labels.append(file_title(item))
+    labels=[x for x in labels if x]
+    if len(labels)>1 and norm(labels[1]) in {'unsorted','unknown','movies','movie','media','misc','films','other'}:
+        labels=labels[:1]
+    if len(labels)==2 and len(norm(labels[0]))>=4 and len(norm(labels[1]))>=4:
+        a,b=norm(labels[0]),norm(labels[1])
+        if not (a.endswith(b) or b.endswith(a)) and similar(labels[0],labels[1])<.55:
+            return None,'Plex title and media-folder title disagree; verify match first'
+    if not labels:return None,'No title available for verification'
+    def title_score(name):
+        key=norm(name)
+        if not key:return 0
+        scores=[]
+        for label in labels:
+            k=norm(label)
+            if not k:continue
+            if k==key:scores.append(1.)
+            elif len(k)>=9 and len(key)>=9 and (k.endswith(key) or key.endswith(k)):
+                scores.append(.96 if min(len(k),len(key))/max(len(k),len(key))>=.52 else similar(label,name))
+            else:scores.append(similar(label,name))
+        return max(scores,default=0.)
+    by_source={}
+    for c in candidates:
+        year=str(c.get('year') or '')
+        if not re.fullmatch(r'\d{4}',year) or not 1888<=int(year)<=datetime.date.today().year+1:continue
+        score=title_score(str(c.get('title') or ''))
+        if score<.87:continue
+        by_source.setdefault(str(c.get('provider') or 'Unknown'),[]).append((score,c))
+    if not by_source:return None,'No reliable provider title match'
+    best=[]
+    for provider,options in by_source.items():
+        options.sort(key=lambda v:-v[0])
+        score,c=options[0]
+        if any(other['year']!=c['year'] and other_score>=score-.035 for other_score,other in options[1:]):
+            return None,f'{provider} lists similarly named releases with different years'
+        best.append((score,c))
+    years={c['year'] for _,c in best}
+    if len(years)>1:return None,'Metadata providers disagree on release year'
+    year=next(iter(years))
+    evidence=[{'provider':str(c['provider']),'title':str(c['title']),'year':str(c['year']),
+               'url':str(c.get('source_url') or ''),'confidence':round(score,2)}
+              for score,c in best]
+    return {'year':year,'sources':evidence},''
+
 class Library:
     def __init__(self):
         self.lock=threading.RLock(); self.rows={}; self.decisions={}; self.lookup={}; self.source='No library loaded'
@@ -321,33 +388,46 @@ class Library:
             elif body.get('poster_url'):v['poster_key']=''
             # Editing any proposed value resets previous approval.
             if any(v[k]!=before.get(k,'') for k in allowed if k!='approved'):v['approved']=False
+            v['year_sources']=before.get('year_sources',[]) if v['year']==before.get('year','') else []
             v['identity']=self.identity(self.rows[pid]); self.decisions[pid]=v;self.save()
             return self.decorated(pid)
 
     def stage_years(self, ids):
-        if not isinstance(ids,list) or not 1 <= len(ids) <= 250:
-            raise ValueError('Select 1–250 rows to stage year corrections')
-        changes=[]; skipped=[]
-        with self.lock:
-            for requested in dict.fromkeys(str(x) for x in ids):
-                item=self.rows.get(requested)
-                if not item:
-                    skipped.append({'id':requested,'reason':'ID is not in the current library'})
-                    continue
-                proof=year_evidence(item)
-                if not proof['batch_safe']:
-                    skipped.append({'id':requested,'reason':proof['explanation'] or 'No two-source movie year mismatch'})
-                    continue
-                old=self.decisions.get(requested,{})
-                proposed=proof['proposed_year']
-                if old.get('year')==proposed:
-                    skipped.append({'id':requested,'reason':'That year is already staged'})
-                    continue
-                self.set_decision(requested,{'year':proposed})
-                changes.append({'id':requested,'title':item.get('plex_title',''),
-                                'old_year':item.get('year',''), 'new_year':proposed,
-                                'approved':False})
-        return {'staged':changes, 'skipped':skipped}
+        if not isinstance(ids,list) or not 1<=len(ids)<=50:
+            raise ValueError('Select 1–50 entries per provider lookup batch')
+        staged=[];skipped=[]
+        for pid in dict.fromkeys(str(x) for x in ids):
+            with self.lock:
+                item=self.rows.get(pid)
+                identity=self.identity(item) if item else ''
+                decision=self.decisions.get(pid,{})
+            if not item:
+                skipped.append({'id':pid,'reason':'Item not in library'});continue
+            if item['type'] not in ('Movie','Show'):
+                skipped.append({'id':pid,'reason':'Episodes have no film/series release year'});continue
+            if decision.get('approved'):
+                skipped.append({'id':pid,'reason':'Already approved; revoke approval before replacing proposal'});continue
+            results,errors=batch_provider_candidates(item)
+            picked,reason=select_provider_year(item,results)
+            with self.lock:
+                if pid not in self.rows or self.identity(self.rows[pid])!=identity:
+                    skipped.append({'id':pid,'reason':'Library changed during provider lookup; refresh'});continue
+                self.lookup[pid]=results
+                if not picked:
+                    skipped.append({'id':pid,'reason':reason,'provider_errors':errors});continue
+                year=picked['year']
+                if year==str(item.get('year') or ''):
+                    skipped.append({'id':pid,'reason':f'Provider confirms current year {year}',
+                                    'sources':picked['sources'],'provider_errors':errors});continue
+                if self.decisions.get(pid,{}).get('year')==year:
+                    skipped.append({'id':pid,'reason':f'Provider year {year} already staged',
+                                    'sources':picked['sources']});continue
+                self.set_decision(pid,{'year':year})
+                self.decisions[pid]['year_sources']=picked['sources'];self.save()
+                staged.append({'id':pid,'title':item.get('plex_title',''),'old_year':item.get('year',''),
+                               'new_year':year,'sources':picked['sources'],'provider_errors':errors,
+                               'approved':False})
+        return {'staged':staged,'skipped':skipped}
 
     def export(self):
         output=io.StringIO(); w=csv.writer(output)

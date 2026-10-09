@@ -17,6 +17,10 @@ To restrict the app to the workstation, use `./run.sh --host 127.0.0.1` or set `
 
 **Security:** Curator has no login, and its endpoints can request Plex edits and file renames. Binding to `0.0.0.0` means any host able to reach port 8765 can access it. Firewall the port to trusted devices only; do not port-forward it to the internet. Cross-origin browser writes are blocked, but this is not authentication.
 
+### Provider-verified Fix Years
+
+**Verify & fix years** queries Wikidata for movies, TVmaze for TV shows, and optionally TMDB when `TMDB_READ_TOKEN` is set. Matches are validated by title, not the existing Plex year; movie folder/filename years remain clues only. Ambiguous remakes, conflicting provider results, and low-confidence matches are skipped. Every proposed release year is accompanied by provider links, remains **pending separate approval**, and is not applied until the user explicitly clicks **Apply approved**. Processing shows progress in batches and reports skipped records. Episodes are skipped; no filenames or directories are automatically renamed.
+
 ### v0.8 — desktop, tablet, and mobile web interface
 
 The same Vite web UI now adapts to wide desktop monitors, tablets, and narrow phones (tested at **1600×900**, **820×1000**, **390×844**, and **320×700**). Desktop retains its three-column workspace. On tablets and phones:

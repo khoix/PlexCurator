@@ -167,7 +167,10 @@ class TestOperations(unittest.TestCase):
             'guid':'plex://movie/11','file_path':'/movies/Other (1980)/Other (1979).mkv'})
         server.LIB.load([*server.LIB.rows.values(),row,row2],'test')
         server.LIB.set_decision('43',{'title':'Star Wars: Episode V - The Empire Strikes Back','approved':False})
-        batch=server.LIB.stage_years(['43','44'])
+        with patch.object(server,'batch_provider_candidates',side_effect=lambda row: (
+            ([{'title':'The Empire Strikes Back','year':'1980','provider':'Wikidata',
+               'source_url':'https://www.wikidata.org/wiki/Q1'}],[]) if row['plex_id']=='43' else ([],[]))):
+            batch=server.LIB.stage_years(['43','44'])
         self.assertEqual([x['id'] for x in batch['staged']],['43'])
         self.assertEqual(len(batch['skipped']),1)
         self.assertFalse(server.LIB.decisions['43']['approved'])

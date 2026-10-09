@@ -9,6 +9,12 @@ Plex Curator is a **Vite + TypeScript web app with a local Python backend**. Run
 
 The web UI includes a themed golden-chevron and wrench icon: multi-resolution `favicon.ico`, PNG favicons (16×16 and 32×32), and an `apple-touch-icon.png` (180×180). Source assets live under `web/public` for Vite builds; matching prebuilt files live in `web/dist` for the Python standalone server. Both HTML entry points reference these assets, and the Python backend serves them with correct image MIME types. The icon is original artwork inspired by Plex's visual design and is not an official Plex logo.
 
+### Provider-backed year reconciliation
+
+The **Verify & fix years** action compares a verified provider release year separately with the year in Plex metadata, the media filename, and the containing movie directory. It stages whichever of these fields need changing, pending individual approval. The review panel shows the title, Plex ID, all compared years, provider links, and clear reasons for ambiguous or already-correct entries. It does not automatically apply edits.
+
+Only existing unambiguous year tokens are replaced in media basenames; collection prefixes and other title text are retained. Filename/folder operations still require allowed media roots and a live filesystem preflight when applying; stale/CSV-sourced folder updates are not automatically staged. Conflicting provider years, title mismatches, and ambiguous remakes remain review-only. Public providers may impose rate limits.
+
 ### Network access (all interfaces)
 
 Plex Curator's Python backend now binds to `0.0.0.0:8765` by default. Open `http://<workstation-ip>:8765` on a phone or computer on your trusted LAN/VPN. The SSH tunnel to Plex remains locally bound on the workstation. The Vite development and preview servers also bind to `0.0.0.0`.

@@ -87,9 +87,22 @@ function applyResultsPanel() {
  ${report ? `<div class="scan-summary" role="status"><b>${report.queued_folders} folder scan${report.queued_folders === 1 ? '' : 's'} queued${report.failed_folders ? ' · ' + report.failed_folders + ' failed' : ''}</b><small>Requested for ${report.requested_files} renamed item${report.requested_files === 1 ? '' : 's'} across ${report.unique_folders} unique folders. Plex completion is not yet confirmed.</small>${report.results.map((r) => `<div class="scan-folder ${r.ok ? '' : 'scan-failed'}">${r.ok ? 'Queued' : 'Failed'} · ${esc(r.folder)}${r.ok ? '' : ` — ${esc(r.error || 'Unknown error')}`}</div>`).join('')}</div>` : ''}
  <div class="log-list">${state.lastApplyResults.map(x => `<div class="log-entry"><b>#${esc(x.id)} · ${x.ok ? 'Success' : 'Failed'}</b>${x.ok ? `<div>${esc((x.data?.changes || []).join(', '))}</div>${(x.data?.changes?.includes('filename') || x.data?.changes?.includes('folder')) && (x.data?.new_file || x.data?.new_folder) ? `<small>${x.data.new_folder ? `Folder: ${esc(x.data.old_folder)} → ${esc(x.data.new_folder)} · ` : ''}${x.data.old_file && x.data.old_file !== x.data.new_file ? `File: ${esc(x.data.old_file)} → ${esc(x.data.new_file)}` : ''}</small><button class="btn btn-subtle small" data-scan="${esc(x.id)}" data-file="${esc(scannedPath(x))}" ${state.scanBusy || state.scannedRenames.has(renameKey(x.id, scannedPath(x))) ? 'disabled' : ''}>${state.scannedRenames.has(renameKey(x.id, scannedPath(x))) ? 'Scan requested' : 'Request Plex folder scan'}</button>` : ''}` : `<div class="rename-warning">${esc(x.error || 'Unknown error')}</div>`}</div>`).join('')}</div><div class="ssh-footer"><button class="btn btn-primary" data-action="hide-apply-results" ${state.scanBusy ? 'disabled' : ''}>Close</button></div></div></div>`;
 }
-function yearBatchPanel(){
- const report=state.yearBatchReport;if(!report)return ''
- return `<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Release-year verification"><div class="modal-top"><h2>Provider year review: ${report.staged.length} staged</h2><button class="icon-button" data-action="hide-year-report" aria-label="Close">${icon('x')}</button></div><p>These are proposals only. No changes have been applied to Plex, folders, or filenames. Review and approve each proposed year separately.</p><div class="log-list">${report.staged.map(x=>`<div class="log-entry"><b>${esc(x.title)} (#${esc(x.id)}): ${esc(x.old_year||'unknown')} → ${esc(x.new_year)}</b><div>${x.sources.map(src=>`<a href="${esc(src.url)}" target="_blank" rel="noopener noreferrer">${esc(src.provider)} — ${esc(src.title)} (${esc(src.year)})</a>`).join(' · ')}</div>${x.provider_errors?.length?`<small>${esc(x.provider_errors.join('; '))}</small>`:''}</div>`).join('')}${report.skipped.map(x=>`<div class="log-entry"><b>#${esc(x.id)} · Not staged</b><small>${esc(x.reason||'Uncertain provider match')}${x.provider_errors?.length?' · '+esc(x.provider_errors.join('; ')):''}</small></div>`).join('')}</div><div class="ssh-footer"><button class="btn btn-primary" data-action="hide-year-report">Review proposals</button></div></div></div>`
+function yearBatchPanel() {
+    const report = state.yearBatchReport;
+    if (!report)
+        return '';
+    const verified = report.verified || [];
+    const one = (x, status) => {
+        const sources = (x.sources || []).filter((src) => src?.provider);
+        const sourceLinks = sources.length ? `<div class="year-sources">${sources.map((src) => {
+            const name = `${src.provider}: ${src.title || 'Unknown'} (${src.year || '—'})`;
+            const href = String(src.url || '');
+            return /^https:\/\//i.test(href) ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>` : `<span>${esc(name)}</span>`;
+        }).join(' · ')}</div>` : '';
+        const desc = status === 'staged' ? `Proposed: ${Object.entries(x.suggested || {}).filter(([key]) => (x.changes || []).includes(key)).map(([key, val]) => `${key === 'year' ? 'Plex year' : key === 'folder' ? 'Folder name' : 'Filename'} → ${val}`).join(' · ')}` : x.reason || 'Requires review';
+        return `<div class="log-entry year-review-item"><b>${esc(x.title || 'Untitled')} <small>#${esc(x.id)}</small></b><div class="year-review-status">${status === 'staged' ? 'Pending approval' : status === 'verified' ? 'Already aligned' : 'Needs review'}</div><div class="year-values"><span>Plex: <strong>${esc(x.plex_year || '—')}</strong></span><span>Filename: <strong>${esc(x.filename_year || '—')}</strong></span><span>Folder: <strong>${esc(x.folder_year || '—')}</strong></span><span>Provider: <strong>${esc(x.provider_year || 'Unconfirmed')}</strong></span></div><div class="year-review-desc">${esc(desc)}</div>${sourceLinks}${x.notes?.length ? `<small>${esc(x.notes.join(' · '))}</small>` : ''}${x.provider_errors?.length ? `<small>${esc(x.provider_errors.join(' · '))}</small>` : ''}</div>`;
+    };
+    return `<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Release-year verification"><div class="modal-top"><h2>Provider year review: ${report.staged.length} pending</h2><button class="icon-button" data-action="hide-year-report" aria-label="Close">${icon('x')}</button></div><p>${report.staged.length} proposed · ${verified.length} already aligned · ${report.skipped.length} need review. Changes to Plex, filenames, and movie folders are proposals only until individually approved and applied. Existing filenames/titles are preserved except for the year token.</p><div class="log-list">${report.staged.map((x) => one(x, 'staged')).join('')}${verified.map((x) => one(x, 'verified')).join('')}${report.skipped.map((x) => one(x, 'skipped')).join('')}</div><div class="ssh-footer"><button class="btn btn-primary" data-action="hide-year-report">Review proposals</button></div></div></div>`;
 }
 function connectPanel() {
     if (!state.showConnect)
@@ -335,21 +348,42 @@ async function action(name) {
             return;
         }
         if (name === 'batch-years') {
- const ids=(state.selectedIds.size?[...state.selectedIds]:state.items.filter(i=>i.type==='Movie'||i.type==='Show').map(i=>i.plex_id)).slice(0,250)
- if(!ids.length){toast('Select movies or TV shows to verify release years.');return}
- if(!window.confirm(`Look up metadata providers for ${ids.length} selected/visible records and stage year corrections? Ambiguous matches and provider disagreements will be skipped. No live changes will be made.`))return
- state.busy=true;state.yearBatchReport=null;const staged=[],skipped=[]
- try{
-  for(let x=0;x<ids.length;x+=5){
-   state.yearBatchProgress=`Checking provider years ${Math.min(x+5,ids.length)}/${ids.length}...`;render()
-   const batch=ids.slice(x,x+5)
-   try{const result=await api('/stage-years','POST',{ids:batch});staged.push(...result.staged);skipped.push(...result.skipped)}
-   catch(error){skipped.push(...batch.map(id=>({id,reason:error.message})))}
-  }
- }finally{state.busy=false;state.yearBatchProgress=''}
- state.yearBatchReport={staged,skipped};await refresh();toast(`Provider verification: ${staged.length} pending approval; ${skipped.length} skipped.`);return
-}
-if (name === 'use-file-title') {
+            const ids = (state.selectedIds.size ? [...state.selectedIds] : state.items.filter(i => i.type === 'Movie' || i.type === 'Show').map(i => i.plex_id)).slice(0, 250);
+            if (!ids.length) {
+                toast('Select movies or TV shows to verify release years.');
+                return;
+            }
+            if (!window.confirm(`Look up metadata providers for ${ids.length} selected/visible record(s) and stage supported year corrections? Conflicting or uncertain matches will be skipped. Nothing will be applied to Plex.`))
+                return;
+            state.busy = true;
+            state.yearBatchReport = null;
+            const staged = [], skipped = [], verified = [];
+            try {
+                for (let x = 0; x < ids.length; x += 5) {
+                    state.yearBatchProgress = `Checking provider years ${Math.min(x + 5, ids.length)}/${ids.length}...`;
+                    render();
+                    const batch = ids.slice(x, x + 5);
+                    try {
+                        const result = await api('/stage-years', 'POST', { ids: batch });
+                        staged.push(...result.staged);
+                        skipped.push(...result.skipped);
+                        verified.push(...(result.verified || []));
+                    }
+                    catch (error) {
+                        skipped.push(...batch.map(id => ({ id, reason: error.message })));
+                    }
+                }
+            }
+            finally {
+                state.busy = false;
+                state.yearBatchProgress = '';
+            }
+            state.yearBatchReport = { staged, skipped, verified };
+            await refresh();
+            toast(`Provider verification: ${staged.length} pending approval; ${verified.length} aligned; ${skipped.length} need review.`);
+            return;
+        }
+        if (name === 'use-file-title') {
             const it = selected();
             const input = document.querySelector('#proposed-title');
             if (it && input)

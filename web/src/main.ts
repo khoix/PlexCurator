@@ -7,7 +7,7 @@ type Item={plex_id:string;type:string;plex_title:string;series_title:string;file
 type List={items:Item[];total:number;stats:Record<string,number>;source:string}
 type Status={source:string;total:number;plex_token:boolean;db_exists:boolean;tmdb_enabled:boolean;plex_url:string;media_roots:string[];ssh_connected:boolean;ssh_config?:{host:string;user:string;port:number;db:string;media_roots:string[]}|null}
 const app=document.querySelector<HTMLDivElement>('#app')!
-const state={items:[] as Item[],total:0, stats:{} as Record<string,number>,status:null as Status|null,selected:'' as string,nav:'all',query:'',flagged:true,offset:0,limit:65, busy:false, providerOrder:'aired',selectedIds:new Set<string>(),lookups:new Map<string,Candidate[]>(),matches:[] as any[],posters:[] as any[],showLog:false,showConnect:false,mobileNavOpen:false,connectionDraft:null as Status['ssh_config'],logs:[] as any[],lookupMessage:'',toast:'',lastRefresh:0,yearBatchReport:null as null|{staged:any[];skipped:any[]},yearBatchProgress:'',renamePreflight:'',lastApplyResults:[] as any[],showApplyResults:false,scanBusy:false,scanReport:null as any,scannedRenames:new Set<string>(),posterMessage:'',matchMessage:'',folderPreflight:''}
+const state={items:[] as Item[],total:0, stats:{} as Record<string,number>,status:null as Status|null,selected:'' as string,nav:'all',query:'',flagged:true,offset:0,limit:65, busy:false, providerOrder:'aired',selectedIds:new Set<string>(),lookups:new Map<string,Candidate[]>(),matches:[] as any[],posters:[] as any[],showLog:false,showConnect:false,mobileNavOpen:false,connectionDraft:null as Status['ssh_config'],logs:[] as any[],lookupMessage:'',toast:'',lastRefresh:0,yearBatchReport:null as null|{staged:any[];skipped:any[];verified:any[]},yearBatchProgress:'',renamePreflight:'',lastApplyResults:[] as any[],showApplyResults:false,scanBusy:false,scanReport:null as any,scannedRenames:new Set<string>(),posterMessage:'',matchMessage:'',folderPreflight:''}
 const esc=(v:unknown)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c))
 const api=async <T=any>(path:string,method='GET',body?:unknown):Promise<T>=>{
  const res=await fetch('/api'+path,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined})
@@ -74,7 +74,18 @@ function applyResultsPanel(){
 }
 function yearBatchPanel(){
  const report=state.yearBatchReport;if(!report)return ''
- return `<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Release-year verification"><div class="modal-top"><h2>Provider year review: ${report.staged.length} staged</h2><button class="icon-button" data-action="hide-year-report" aria-label="Close">${icon('x')}</button></div><p>These are proposals only. No changes have been applied to Plex, folders, or filenames. Review and approve each proposed year separately.</p><div class="log-list">${report.staged.map(x=>`<div class="log-entry"><b>${esc(x.title)} (#${esc(x.id)}): ${esc(x.old_year||'unknown')} → ${esc(x.new_year)}</b><div>${x.sources.map(src=>`<a href="${esc(src.url)}" target="_blank" rel="noopener noreferrer">${esc(src.provider)} — ${esc(src.title)} (${esc(src.year)})</a>`).join(' · ')}</div>${x.provider_errors?.length?`<small>${esc(x.provider_errors.join('; '))}</small>`:''}</div>`).join('')}${report.skipped.map(x=>`<div class="log-entry"><b>#${esc(x.id)} · Not staged</b><small>${esc(x.reason||'Uncertain provider match')}${x.provider_errors?.length?' · '+esc(x.provider_errors.join('; ')):''}</small></div>`).join('')}</div><div class="ssh-footer"><button class="btn btn-primary" data-action="hide-year-report">Review proposals</button></div></div></div>`
+ const verified=(report as any).verified||[]
+ const one=(x:any,status:'staged'|'skipped'|'verified')=>{
+  const sources=(x.sources||[]).filter((src:any)=>src?.provider)
+  const sourceLinks=sources.length?`<div class="year-sources">${sources.map((src:any)=>{
+   const name=`${src.provider}: ${src.title||'Unknown'} (${src.year||'—'})`
+   const href=String(src.url||'')
+   return /^https:\/\//i.test(href)?`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>`:`<span>${esc(name)}</span>`
+  }).join(' · ')}</div>`:''
+  const desc=status==='staged'?`Proposed: ${Object.entries(x.suggested||{}).filter(([key])=>(x.changes||[]).includes(key)).map(([key,val])=>`${key==='year'?'Plex year':key==='folder'?'Folder name':'Filename'} → ${val}`).join(' · ')}`:x.reason||'Requires review'
+  return `<div class="log-entry year-review-item"><b>${esc(x.title||'Untitled')} <small>#${esc(x.id)}</small></b><div class="year-review-status">${status==='staged'?'Pending approval':status==='verified'?'Already aligned':'Needs review'}</div><div class="year-values"><span>Plex: <strong>${esc(x.plex_year||'—')}</strong></span><span>Filename: <strong>${esc(x.filename_year||'—')}</strong></span><span>Folder: <strong>${esc(x.folder_year||'—')}</strong></span><span>Provider: <strong>${esc(x.provider_year||'Unconfirmed')}</strong></span></div><div class="year-review-desc">${esc(desc)}</div>${sourceLinks}${x.notes?.length?`<small>${esc(x.notes.join(' · '))}</small>`:''}${x.provider_errors?.length?`<small>${esc(x.provider_errors.join(' · '))}</small>`:''}</div>`
+ }
+ return `<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Release-year verification"><div class="modal-top"><h2>Provider year review: ${report.staged.length} pending</h2><button class="icon-button" data-action="hide-year-report" aria-label="Close">${icon('x')}</button></div><p>${report.staged.length} proposed · ${verified.length} already aligned · ${report.skipped.length} need review. Changes to Plex, filenames, and movie folders are proposals only until individually approved and applied. Existing filenames/titles are preserved except for the year token.</p><div class="log-list">${report.staged.map((x:any)=>one(x,'staged')).join('')}${verified.map((x:any)=>one(x,'verified')).join('')}${report.skipped.map((x:any)=>one(x,'skipped')).join('')}</div><div class="ssh-footer"><button class="btn btn-primary" data-action="hide-year-report">Review proposals</button></div></div></div>`
 }
 function connectPanel(){if(!state.showConnect)return '';
 const c=state.connectionDraft||state.status?.ssh_config
@@ -151,17 +162,19 @@ if(name==='use-year'){const it=selected();const el=document.querySelector<HTMLIn
 if(name==='batch-years'){
  const ids=(state.selectedIds.size?[...state.selectedIds]:state.items.filter(i=>i.type==='Movie'||i.type==='Show').map(i=>i.plex_id)).slice(0,250)
  if(!ids.length){toast('Select movies or TV shows to verify release years.');return}
- if(!window.confirm(`Look up metadata providers for ${ids.length} selected/visible records and stage year corrections? Ambiguous matches and provider disagreements will be skipped. No live changes will be made.`))return
- state.busy=true;state.yearBatchReport=null;const staged:any[]=[],skipped:any[]=[]
+ if(!window.confirm(`Look up metadata providers for ${ids.length} selected/visible record(s) and stage supported year corrections? Conflicting or uncertain matches will be skipped. Nothing will be applied to Plex.`))return
+ state.busy=true;state.yearBatchReport=null;const staged:any[]=[],skipped:any[]=[],verified:any[]=[]
  try{
   for(let x=0;x<ids.length;x+=5){
    state.yearBatchProgress=`Checking provider years ${Math.min(x+5,ids.length)}/${ids.length}...`;render()
    const batch=ids.slice(x,x+5)
-   try{const result=await api<{staged:any[];skipped:any[]}>('/stage-years','POST',{ids:batch});staged.push(...result.staged);skipped.push(...result.skipped)}
-   catch(error){skipped.push(...batch.map(id=>({id,reason:(error as Error).message})))}
+   try{
+    const result=await api<{staged:any[];skipped:any[];verified:any[]}>('/stage-years','POST',{ids:batch})
+    staged.push(...result.staged);skipped.push(...result.skipped);verified.push(...(result.verified||[]))
+   }catch(error){skipped.push(...batch.map(id=>({id,reason:(error as Error).message})))}
   }
  }finally{state.busy=false;state.yearBatchProgress=''}
- state.yearBatchReport={staged,skipped};await refresh();toast(`Provider verification: ${staged.length} pending approval; ${skipped.length} skipped.`);return
+ state.yearBatchReport={staged,skipped,verified};await refresh();toast(`Provider verification: ${staged.length} pending approval; ${verified.length} aligned; ${skipped.length} need review.`);return
 }
 if(name==='use-file-title'){const it=selected();const input=document.querySelector<HTMLInputElement>('#proposed-title');if(it&&input)input.value=it.diagnostic.proposed_title;return}
 if(name==='lookup'){const it=selected();if(!it)return;state.busy=true;render();await lookup(it.plex_id);state.busy=false;render();toast('Provider lookup completed. Compare evidence before approving.');return}

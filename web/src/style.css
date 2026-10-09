@@ -223,3 +223,12 @@ body{min-width:0}
  .sidebar .nav-item{flex:0 0 auto}
  .sidebar .nav-item svg{flex-shrink:0}
 }
+
+.year-review-item { overflow-wrap:anywhere; }
+.year-review-item > b { display:block; margin-bottom:4px; }
+.year-review-item > b small { font-size:.73em; color:var(--muted,#64748b); font-weight:400; }
+.year-review-status { font-size:.77rem; font-weight:650; margin-bottom:7px; }
+.year-values { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 14px; font-size:.82rem; margin:7px 0; }
+.year-review-desc { font-size:.84rem; font-weight:500; line-height:1.5; }
+.year-sources { font-size:.78rem; line-height:1.5; margin:8px 0; }
+@media(max-width:520px){ .year-values { grid-template-columns:1fr 1fr; } }

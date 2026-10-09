@@ -323,6 +323,44 @@ def select_provider_year(item,candidates):
               for score,c in best]
     return {'year':year,'sources':evidence},''
 
+# Change only an existing, standalone year token in a media basename.
+# Preserve intentional franchise prefixes and all other filename details.
+MEDIA_YEAR_TOKEN = re.compile(r'(?<!\d)(?:18|19|20)\d{2}(?!\d)')
+
+
+def replace_named_year(basename, expected_year, provider_year):
+    if not expected_year or not provider_year or expected_year == provider_year:
+        return ''
+    occurrences = list(MEDIA_YEAR_TOKEN.finditer(basename))
+    if len(occurrences) != 1 or occurrences[0].group() != expected_year:
+        return ''  # Multiple dates / editions require manual review.
+    match = occurrences[0]
+    return basename[:match.start()] + provider_year + basename[match.end():]
+
+
+def year_media_suggestions(item, provider_year):
+    result = {'filename':'', 'folder':'', 'notes':[]}
+    if item.get('type') != 'Movie' or not item.get('file_path'):
+        return result
+    path = Path(item['file_path'])
+    evidence = year_evidence(item)
+    current_file = evidence['filename_year']
+    current_folder = evidence['folder_year']
+    if current_file and current_file != provider_year:
+        new_stem = replace_named_year(path.stem, current_file, provider_year)
+        if new_stem: result['filename'] = new_stem + path.suffix
+        else: result['notes'].append('Filename has multiple/unclear year tokens; rename manually')
+    elif not current_file:
+        result['notes'].append('Filename has no recognizable year; inspect before renaming')
+    if current_folder and current_folder != provider_year:
+        new_name = replace_named_year(path.parent.name, current_folder, provider_year)
+        if new_name: result['folder'] = new_name
+        else: result['notes'].append('Folder has multiple/unclear year tokens; rename manually')
+    elif not current_folder:
+        result['notes'].append('Folder has no recognizable year; inspect before renaming')
+    return result
+
+
 class Library:
     def __init__(self):
         self.lock=threading.RLock(); self.rows={}; self.decisions={}; self.lookup={}; self.source='No library loaded'
@@ -393,41 +431,87 @@ class Library:
             return self.decorated(pid)
 
     def stage_years(self, ids):
-        if not isinstance(ids,list) or not 1<=len(ids)<=50:
-            raise ValueError('Select 1–50 entries per provider lookup batch')
-        staged=[];skipped=[]
-        for pid in dict.fromkeys(str(x) for x in ids):
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
+            raise ValueError('Select 1–50 entries per provider batch')
+        changes, skipped, verified = [], [], []
+        for requested in dict.fromkeys(str(x) for x in ids):
             with self.lock:
-                item=self.rows.get(pid)
-                identity=self.identity(item) if item else ''
-                decision=self.decisions.get(pid,{})
+                item = self.rows.get(requested)
+                identity = self.identity(item) if item else ''
+                prior = self.decisions.get(requested, {}).copy() if item else {}
             if not item:
-                skipped.append({'id':pid,'reason':'Item not in library'});continue
-            if item['type'] not in ('Movie','Show'):
-                skipped.append({'id':pid,'reason':'Episodes have no film/series release year'});continue
-            if decision.get('approved'):
-                skipped.append({'id':pid,'reason':'Already approved; revoke approval before replacing proposal'});continue
-            results,errors=batch_provider_candidates(item)
-            picked,reason=select_provider_year(item,results)
+                skipped.append({'id':requested, 'title':'Unknown', 'reason':'Not in current library'})
+                continue
+            base = {'id':requested, 'title':item.get('plex_title') or 'Untitled',
+                    'plex_year':str(item.get('year') or ''), 'folder_year':'',
+                    'filename_year':'', 'sources':[], 'provider_year':'',
+                    'provider_errors':[]}
+            if item['type'] == 'Movie':
+                evidence = year_evidence(item)
+                base.update(folder_year=evidence['folder_year'], filename_year=evidence['filename_year'])
+            if item['type'] not in ('Movie', 'Show'):
+                skipped.append({**base, 'reason':'Episodes have no movie or series release year'})
+                continue
+            if prior.get('approved'):
+                skipped.append({**base, 'reason':'Already approved; revoke approval before replacing proposals'})
+                continue
+            candidates, errors = batch_provider_candidates(item)
+            selection, reason = select_provider_year(item, candidates)
             with self.lock:
-                if pid not in self.rows or self.identity(self.rows[pid])!=identity:
-                    skipped.append({'id':pid,'reason':'Library changed during provider lookup; refresh'});continue
-                self.lookup[pid]=results
-                if not picked:
-                    skipped.append({'id':pid,'reason':reason,'provider_errors':errors});continue
-                year=picked['year']
-                if year==str(item.get('year') or ''):
-                    skipped.append({'id':pid,'reason':f'Provider confirms current year {year}',
-                                    'sources':picked['sources'],'provider_errors':errors});continue
-                if self.decisions.get(pid,{}).get('year')==year:
-                    skipped.append({'id':pid,'reason':f'Provider year {year} already staged',
-                                    'sources':picked['sources']});continue
-                self.set_decision(pid,{'year':year})
-                self.decisions[pid]['year_sources']=picked['sources'];self.save()
-                staged.append({'id':pid,'title':item.get('plex_title',''),'old_year':item.get('year',''),
-                               'new_year':year,'sources':picked['sources'],'provider_errors':errors,
-                               'approved':False})
-        return {'staged':staged,'skipped':skipped}
+                if requested not in self.rows or self.identity(self.rows[requested]) != identity:
+                    skipped.append({**base, 'reason':'Library changed during provider lookup; refresh'});
+                    continue
+                self.lookup[requested] = candidates
+                if not selection:
+                    preview = [{'provider':str(c.get('provider') or ''),
+                                'title':str(c.get('title') or ''),
+                                'year':str(c.get('year') or ''),
+                                'url':str(c.get('source_url') or '')}
+                               for c in candidates if c.get('year')][:5]
+                    skipped.append({**base, 'reason':reason, 'sources':preview,
+                                    'provider_errors':errors})
+                    continue
+                target_year = selection['year']
+                meta = {**base, 'provider_year':target_year,
+                        'sources':selection['sources'], 'provider_errors':errors}
+                corrections = {}
+                if str(item.get('year') or '') != target_year:
+                    corrections['year'] = target_year
+                suggested = year_media_suggestions(item, target_year)
+                # Only a live, freshly loaded DB can safely propose directory changes.
+                notes = list(suggested['notes'])
+                if self.source.startswith('CSV') or self.source.startswith('Uploaded'):
+                    if suggested['folder']:
+                        notes.append('Connect to live Plex DB before staging folder changes')
+                        suggested['folder'] = ''
+                for name in ('filename','folder'):
+                    if suggested[name]: corrections[name] = suggested[name]
+                if not corrections:
+                    verified.append({**meta, 'reason':f'Plex and named media years match provider ({target_year})',
+                                     'notes':notes})
+                    continue
+                current = self.decisions.get(requested, {})
+                conflict = [field for field, target in corrections.items()
+                            if current.get(field) and current[field] != target]
+                if conflict:
+                    skipped.append({**meta, 'reason':f'Existing proposal conflicts with provider for {", ".join(conflict)}; review manually',
+                                    'suggested':corrections, 'notes':notes})
+                    continue
+                updates = {field: target for field,target in corrections.items()
+                           if current.get(field) != target}
+                if not updates:
+                    skipped.append({**meta, 'reason':'These provider-backed corrections are already staged',
+                                    'suggested':corrections, 'notes':notes})
+                    continue
+                self.set_decision(requested, updates)
+                self.decisions[requested]['year_sources'] = selection['sources']
+                self.decisions[requested]['approved'] = False
+                self.save()
+                staged_now = {**meta, 'old_year':str(item.get('year') or ''),
+                              'new_year':target_year, 'changes':list(updates),
+                              'suggested':corrections, 'notes':notes, 'approved':False}
+                changes.append(staged_now)
+        return {'staged':changes,'skipped':skipped,'verified':verified}
 
     def export(self):
         output=io.StringIO(); w=csv.writer(output)

@@ -5,6 +5,14 @@ Plex Curator is a **Vite + TypeScript web app with a local Python backend**. Run
 **Status:** functional alpha. Unit/integration simulations pass; **live Plex API compatibility and SSH access to your particular Plex installation have not yet been verified**. Make a Plex database backup before applying batch edits.
 
 
+### Network access (all interfaces)
+
+Plex Curator's Python backend now binds to `0.0.0.0:8765` by default. Open `http://<workstation-ip>:8765` on a phone or computer on your trusted LAN/VPN. The SSH tunnel to Plex remains locally bound on the workstation. The Vite development and preview servers also bind to `0.0.0.0`.
+
+To restrict the app to the workstation, use `./run.sh --host 127.0.0.1` or set `CURATOR_HOST=127.0.0.1` (Windows: `py -3 backend/server.py --host 127.0.0.1`).
+
+**Security:** Curator has no login, and its endpoints can request Plex edits and file renames. Binding to `0.0.0.0` means any host able to reach port 8765 can access it. Firewall the port to trusted devices only; do not port-forward it to the internet. Cross-origin browser writes are blocked, but this is not authentication.
+
 ### v0.8 — desktop, tablet, and mobile web interface
 
 The same Vite web UI now adapts to wide desktop monitors, tablets, and narrow phones (tested at **1600×900**, **820×1000**, **390×844**, and **320×700**). Desktop retains its three-column workspace. On tablets and phones:
@@ -14,7 +22,7 @@ The same Vite web UI now adapts to wide desktop monitors, tablets, and narrow ph
 - Inventory cards, batch actions, filename/folder controls, poster choices, and SSH dialogs reflow for smaller screens. Phone forms use touch-sized buttons and inputs that do not cause iOS Safari to zoom.
 - Dialogs take the available phone height, respect display safe areas, and allow scrolling to buttons and errors. Escape dismisses desktop overlays and Enter/Space activates a focused inventory record.
 
-The remote SSH/Plex backend and its write safeguards have **not changed**. The Python backend still runs on a Windows/macOS/Linux **computer**, not on a phone. A phone can use the web interface **only if it can securely reach that computer**: by default Curator binds to `127.0.0.1:8765`, so it is *not* automatically accessible from other devices. Do not publicly expose Curator's write-capable endpoints; use a trusted private access solution with authentication, or simply use a browser on the same workstation.
+The remote SSH/Plex backend and its write safeguards have **not changed**. The Python backend still runs on a Windows/macOS/Linux **computer**, not on a phone. A phone can use the web interface when it can reach the workstation over a trusted LAN/VPN. The Python backend now listens on `0.0.0.0:8765` by default. Keep port 8765 firewalled to trusted clients; do not expose this unauthenticated app to the internet.
 
 **Validation:** 49 existing backend tests and TypeScript type checking pass. Simulated-browser interactive tests of the navigation drawer, selected-item inspector, and SSH dialog pass at the four viewport sizes above without page-level horizontal overflow or JavaScript errors. The UI was tested with simulated API responses from a 5,779-record Plex export; no live Plex edits were performed.
 
@@ -37,7 +45,7 @@ Folder changes are **not available from a stale/imported CSV**: connect to the s
 
 ```text
 Windows / macOS / Linux workstation
-  Browser (Vite UI, served at localhost:8765)
+  Browser (Vite UI, served at 0.0.0.0:8765; access via workstation IP)
          ↕
   Local Python 3.10+ backend
          ├── SSH remote command → read-only SQLite snapshot + media file operations
@@ -47,7 +55,7 @@ Windows / macOS / Linux workstation
 Plex server (SSH + Python 3.10+ + existing Plex installation)
 ```
 
-The **SSH client runs on the workstation**, not the Plex server. The SSH tunnel forwards the Plex **API**, not the entire web editor. Read-only database queries and approved filename renames use separately authenticated SSH commands. This is not a browser-only application: browsers cannot directly create SSH sessions or safely mutate remote files.
+The **SSH client runs on the workstation**, not the Plex server. The SSH tunnel forwards the Plex **API**, not the entire web editor. Binding Curator to all interfaces does not expose its internal Plex SSH tunnel. Read-only database queries and approved filename renames use separately authenticated SSH commands. This is not a browser-only application: browsers cannot directly create SSH sessions or safely mutate remote files.
 
 ## Start locally
 
@@ -73,7 +81,7 @@ cd plex-curator
 py -3 backend/server.py
 ```
 
-Open **http://127.0.0.1:8765** on the workstation and click **Connect via SSH**.
+Open **http://127.0.0.1:8765** on the workstation or **http://<workstation-ip>:8765** from a trusted LAN device, then click **Connect via SSH**.
 
 For your Fedora Plex host, defaults in the dialog are:
 
@@ -125,7 +133,7 @@ The remote SSH user must be able to **read Plex's SQLite database and `Preferenc
 - No full transaction across Plex API and filesystem, and no reliable automatic rollback of provider rematches/poster changes. **Plex may treat a rename as a new item on the next scan**, possibly losing custom metadata or watched status. Back up Plex first. A scan request is queued asynchronously and may not complete right away. Do not enable auto-empty-trash during a large rename project without understanding the risk; verify a single item first.
 - A valid but wrong poster cannot reliably be identified from DB fields alone. Poster changes require human review.
 - Ambiguous DVD/air-date episode ordering must be verified before changing titles or media files.
-- This is a **local single-user web service** listening at `127.0.0.1:8765` without a login portal. Do **not** expose it publicly or to a LAN. Avoid running the desktop backend as root.
+- **Network exposure:** The app binds to `0.0.0.0:8765` by default, with no login portal. Any device able to connect can access its Plex/file-change endpoints. Restrict LAN access with firewall/VPN rules, **never expose it publicly**, and use `--host 127.0.0.1` for local-only use. Same-origin browser checks are not authentication. Avoid running the backend as root.
 - Connecting to another server ends the previous tunnel. No automatic reconnection, OS keychain integration, multi-server management, or batch database editing.
 
 ## Development

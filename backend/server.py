@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plex Curator backend. localhost-only, read-only DB; opt-in Plex/file writes."""
+"""Plex Curator backend. Read-only DB; opt-in Plex/file writes."""
 import argparse, csv, io, json, os, re, tempfile, threading, time, urllib.parse, urllib.request, urllib.error, xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -533,10 +533,19 @@ class Handler(BaseHTTPRequestHandler):
         if length<=0 or length>28_000_000:raise ValueError('Invalid body size')
         return json.loads(self.rfile.read(length))
     def origin_ok(self):
+        # Writes are accepted from the exact host/port serving the web UI,
+        # including LAN addresses when the service binds to 0.0.0.0.
         origin=self.headers.get('Origin','')
-        if not origin:return True
-        parsed=urllib.parse.urlparse(origin)
-        return parsed.scheme in ('http','https') and parsed.hostname in ('localhost','127.0.0.1')
+        if not origin:return True  # CLI/API clients do not send Origin.
+        try:
+            parsed=urllib.parse.urlsplit(origin)
+            return (parsed.scheme in ('http','https')
+                    and parsed.netloc.lower()==self.headers.get('Host','').lower()
+                    and parsed.path in ('','/')
+                    and not parsed.query and not parsed.fragment
+                    and parsed.username is None and parsed.password is None)
+        except ValueError:
+            return False
     def do_GET(self):
         try:
             route=urllib.parse.urlparse(self.path);parts=route.path.strip('/').split('/')
@@ -581,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(404,{'error':'Not found'})
         except Exception as e:self.fail(e)
     def do_POST(self):
-        if not self.origin_ok():return self.json(403,{'error':'Local-origin requests only'})
+        if not self.origin_ok():return self.json(403,{'error':'Same-origin requests only'})
         try:
             p=self.path;body=self.body()
             if p=='/api/connect':
@@ -683,11 +692,15 @@ def main():
     parser=argparse.ArgumentParser(description='Plex Curator — read-only Plex DB + metadata UI')
     parser.add_argument('--csv',help='Preload a Plex metadata CSV export')
     parser.add_argument('--db',action='store_true',help='Load local SQLite DB at startup')
+    parser.add_argument('--host',default=os.getenv('CURATOR_HOST','0.0.0.0'),
+                        help='Bind address (default: 0.0.0.0; 127.0.0.1 for local-only)')
     parser.add_argument('--port',type=int,default=8765)
     args=parser.parse_args()
     if args.csv:LIB.load(import_csv(Path(args.csv).read_text(encoding='utf-8-sig')),f'CSV: {Path(args.csv).name}')
     elif args.db:LIB.load(import_db(PLEX_DB),'Plex SQLite (read-only snapshot)')
-    print(f'Plex Curator backend listening on http://127.0.0.1:{args.port} (local; use Connect via SSH in browser)')
+    print(f'Plex Curator backend listening on {args.host}:{args.port} (open in browser at http://<this-computer-ip>:{args.port})')
+    if args.host not in ('127.0.0.1','localhost','::1'):
+        print('WARNING: No app login. Anyone who can reach this port may control Plex Curator. Restrict access to a trusted LAN/VPN; do not expose it to the internet.',flush=True)
     print(f'{len(LIB.rows)} records loaded; Plex token: {"found" if plex_token() else "not found"}; renames: {"enabled" if MEDIA_ROOTS else "disabled"}',flush=True)
-    ThreadingHTTPServer(('127.0.0.1',args.port),Handler).serve_forever()
+    ThreadingHTTPServer((args.host,args.port),Handler).serve_forever()
 if __name__=='__main__':main()

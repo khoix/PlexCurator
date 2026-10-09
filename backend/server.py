@@ -585,7 +585,7 @@ class Handler(BaseHTTPRequestHandler):
             if index.exists() and not route.path.startswith('/api'):
                 requested=(ROOT/'web'/'dist'/route.path.lstrip('/')).resolve()
                 if not requested.is_relative_to((ROOT/'web'/'dist').resolve()) or not requested.is_file():requested=index
-                mimetype='text/html' if requested.suffix=='.html' else 'application/javascript' if requested.suffix=='.js' else 'text/css' if requested.suffix=='.css' else 'image/svg+xml' if requested.suffix=='.svg' else 'application/octet-stream'
+                mimetype={'.html':'text/html', '.js':'application/javascript', '.css':'text/css', '.svg':'image/svg+xml', '.png':'image/png', '.ico':'image/x-icon'}.get(requested.suffix.lower(), 'application/octet-stream')
                 data=requested.read_bytes();self.send_response(200);self.send_header('Content-Type',mimetype);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
             return self.json(404,{'error':'Not found'})
         except Exception as e:self.fail(e)

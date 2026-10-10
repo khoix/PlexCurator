@@ -210,6 +210,7 @@ After replacing an older installation, restart the local backend and hard-refres
 
 ### v0.4 — filename rename repair
 
+- The SSH connection form defaults to **`/media/Movies`** and **`/media/Series`** on the first connection. Existing SSH media-root settings are preserved, including an intentionally empty list. Confirm or edit these paths before connecting; they refer to the Plex server, not the workstation.
 - The SSH connection form now clearly marks **Allowed media directories** as required for renaming. If none were configured, the inspector offers **Configure now** and proposes the current item's folder. Select a broader parent folder to allow multiple movies or episodes. Reconnect to apply changed permissions.
 - **Check filename rename** performs an actual remote read-only preflight: confirms source is a real media file, the path is under an allowed root, the extension is unchanged, and no destination exists.
 - Uses `renameat2(RENAME_NOREPLACE)` on Fedora/Linux, not only hard links; retains no-overwrite fallback or fails without changing files.

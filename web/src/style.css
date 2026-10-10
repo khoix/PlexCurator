@@ -242,3 +242,60 @@ body{min-width:0}
 .media-row .proposal-removal{justify-self:end;white-space:nowrap}
 .media-row .proposal-removal button{min-height:32px}
 @media(max-width:700px){.media-row .proposal-removal button{font-size:.72rem;padding:5px 8px}.preview-pick{min-height:44px}}
+
+
+/* Media rows have seven children: checkbox, artwork, title, year, status,
+   proposal action, and chevron. Keep each in an explicit grid track. */
+.media-row,
+.table-head {
+  grid-template-columns: 26px 30px minmax(0,1fr) 58px 98px 78px 16px;
+  gap: 7px;
+}
+.media-row > .pick { grid-column: 1; grid-row: 1; }
+.media-row > .media-type-icon { grid-column: 2; grid-row: 1; }
+.media-row > .media-info { grid-column: 3; grid-row: 1; }
+.media-row > .media-meta { grid-column: 4; grid-row: 1; }
+.media-row > .issue-tag { grid-column: 5; grid-row: 1; justify-self: start; max-width: 100%; }
+.media-row > .proposal-removal {
+  grid-column: 6;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: stretch;
+  min-width: 0;
+}
+.media-row > .proposal-removal button {
+  max-width: 100%;
+  white-space: nowrap;
+  min-height: 32px;
+}
+.media-row > .row-arrow { grid-column: 7; grid-row: 1; justify-self: center; }
+.table-head > span:nth-child(2) { grid-column: 2 / 4; }
+.table-head > span:nth-child(3) { grid-column: 4; }
+.table-head > span:nth-child(4) { grid-column: 5; }
+.table-head > span:nth-child(5) { grid-column: 6 / 8; }
+
+@media (max-width: 700px) {
+  .media-row, .table-head {
+    grid-template-columns: 23px 28px minmax(0,1fr) 86px 76px;
+    gap: 6px;
+    padding-inline: 10px;
+  }
+  .media-row > .media-meta,
+  .media-row > .row-arrow,
+  .table-head > span:nth-child(3) { display: none; }
+  .media-row > .issue-tag { grid-column: 4; }
+  .media-row > .proposal-removal { grid-column: 5; }
+  .table-head > span:nth-child(4) { grid-column: 4; }
+  .table-head > span:nth-child(5) { grid-column: 5; }
+  .media-row > .issue-tag { white-space: normal; text-align: center; line-height: 1.25; }
+}
+@media (max-width: 365px) {
+  .media-row, .table-head {
+    grid-template-columns: 22px 26px minmax(0,1fr) 74px 68px;
+    gap: 5px;
+    padding-inline: 8px;
+  }
+  .media-row > .proposal-removal button { font-size: 10px; padding: 5px 6px; }
+}

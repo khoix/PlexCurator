@@ -257,8 +257,9 @@ def atomic_json(path, data):
 
 
 
-def batch_provider_candidates(item):
-    """Consult film/show metadata providers before proposing release years."""
+def batch_provider_candidates(item, order='aired'):
+    """Fetch provider evidence for film, series or a numbered TV episode."""
+    if order not in ('aired','dvd'):raise ValueError('Unsupported episode order')
     choices,errors=[],[]
     if item['type']=='Movie':
         sources=[('TMDB',lambda:tmdb_lookup(item,TMDB_TOKEN))] if TMDB_TOKEN else []
@@ -266,12 +267,13 @@ def batch_provider_candidates(item):
     elif item['type']=='Show':
         sources=[('TVmaze',lambda:tvmaze_lookup(item))]
         if TMDB_TOKEN:sources.append(('TMDB',lambda:tmdb_lookup(item,TMDB_TOKEN)))
-    else:return [],['Only movies and shows have a release year']
+    elif item['type']=='Episode':
+        sources=[('TVmaze',lambda:tvmaze_lookup(item,order))]
+    else:return [],['Unsupported media type']
     for name,lookup in sources:
         try:choices.extend(lookup())
         except (OSError,ValueError) as exc:errors.append(f'{name}: {exc}')
     return choices,errors
-
 
 def select_provider_year(item,candidates):
     """Conservative title-based verification; do not trust current Plex year."""
@@ -361,6 +363,107 @@ def year_media_suggestions(item, provider_year):
     return result
 
 
+def _title_resembles(a, b):
+    """Strong title resemblance, allowing a recognized franchise prefix."""
+    ka,kb=norm(a),norm(b)
+    if not ka or not kb:return False
+    if ka==kb:return True
+    if min(len(ka),len(kb))>=8 and (ka.endswith(kb) or kb.endswith(ka)):
+        return min(len(ka),len(kb))/max(len(ka),len(kb))>=.49
+    return similar(a,b)>=.87
+
+
+def select_provider_media(item, candidates):
+    """Identify an unambiguous media record, without assuming Plex/file year is correct.
+
+    Provider title/identity is the primary evidence. Years may distinguish remakes,
+    but conflicting or unresolved same-name editions are never auto-staged.
+    """
+    kind=item.get('type')
+    if kind not in ('Movie','Show','Episode'):
+        return None, 'Unsupported media type'
+    plex=str(item.get('plex_title') or '')
+    disk=file_title(item) if kind in ('Movie','Episode') else ''
+    if kind=='Episode':
+        # The number/ordering identifies an episode; refuse when neither
+        # Plex nor filename resembles the TVmaze episode title.
+        if not (item.get('season_number') and item.get('episode_number')) and not re.search(r'(?i)s\d{1,2}e\d{1,3}',item.get('file_path') or ''):
+            return None, 'No reliable SxxEyy episode numbering for lookup'
+    labels=[x for x in (plex,disk) if x]
+    if not labels:return None,'No title in Plex or media path'
+    strong=[]
+    for c in candidates:
+        title=str(c.get('title') or '').strip()
+        if not title:continue
+        if kind!='Episode' and not re.fullmatch(r'\d{4}',str(c.get('year') or '')):continue
+        title_score=max([similar(label,title) if not _title_resembles(label,title) else
+                         (1.0 if norm(label)==norm(title) else .94) for label in labels])
+        if title_score < (.82 if kind=='Episode' else .87):continue
+        strong.append((title_score,c))
+    if not strong:return None,'No provider candidate strongly matches Plex title or media name'
+    strong.sort(key=lambda p:-p[0])
+    # Repeated matches within the same source with different years are ambiguous
+    # unless exactly one agrees with independent naming evidence.
+    top=strong[0][0]
+    plausible=[(score,c) for score,c in strong if score>=max(.87 if kind!='Episode' else .82, top-.045)]
+    if kind!='Episode':
+        years={str(c.get('year')) for _,c in plausible}
+        if len(years)>1:
+            return None,'Multiple similarly named provider releases have different years; verify the edition manually'
+    # Do not merge strong matches for distinctly different films into one candidate.
+    main=plausible[0][1]
+    if any(not _title_resembles(str(c['title']),str(main['title'])) for _,c in plausible[1:]):
+        return None,'Providers returned different possible titles; verify the match manually'
+    # The preferred provider is the most direct movie/show catalog (when configured).
+    rank={'TMDB':0,'TVmaze':1,'Wikidata':2,'TVmaze aired order':1,'TVmaze DVD order':1}
+    plausible.sort(key=lambda pair:(rank.get(str(pair[1].get('provider')),10),-pair[0]))
+    best=plausible[0][1]
+    if kind=='Episode':
+        if str(best.get('order') or '')=='dvd':
+            # DVD ordering is useful but can vary; require explicit review.
+            pass
+    sources=[{'provider':str(c.get('provider') or ''),'title':str(c.get('title') or ''),
+              'year':str(c.get('year') or ''),'url':str(c.get('source_url') or ''),
+              'confidence':round(score,2)} for score,c in plausible]
+    return {'title':str(best['title']).strip(),'year':str(best.get('year') or ''),
+            'sources':sources,'provider':str(best.get('provider') or '')},''
+
+
+def _collection_title(item, title):
+    """Keep intentional Plex collection/franchise prefixes and episode labels."""
+    current=str(item.get('plex_title') or '')
+    if not current or not title:return title
+    if norm(current)==norm(title):return title
+    if current.endswith(title):return current
+    if norm(current).endswith(norm(title)) and ':' in current:
+        prefix=current.split(':',1)[0].strip()
+        collections=[x.strip() for x in (item.get('collections') or '').split('|') if x.strip()]
+        if any(norm(prefix)==norm(c) for c in collections) or prefix.lower().startswith(('star wars','marvel','harry potter','the lord of the rings')):
+            return current
+    return title
+
+
+def verify_provider_batch(item, kind, selected):
+    """Build a *single-field* proposal; never silently change other fields."""
+    title=selected['title']
+    if kind=='title':
+        if item['type']=='Movie': title=_collection_title(item,title)
+        if title==str(item.get('plex_title') or ''):
+            return '', 'Plex title already matches verified provider title'
+        # Do not replace intentional punctuation/known alternate without manual
+        # approval: any proposal still requires explicit individual review.
+        return title,''
+    if kind=='filename':
+        if item['type']=='Show':return '','Series folders have no media filename; use a movie or episode'
+        if not item.get('file_path'):return '','No media file path available'
+        if item['type']=='Movie':title=_collection_title(item,title)
+        year=selected['year'] if item['type']=='Movie' else None
+        name=filename_proposal(item,title,year=year,force=True)
+        if not name:return '','Filename already matches verified provider title and year'
+        return name,''
+    return '','Unsupported batch verification kind'
+
+
 class Library:
     def __init__(self):
         self.lock=threading.RLock(); self.rows={}; self.decisions={}; self.lookup={}; self.source='No library loaded'
@@ -440,6 +543,7 @@ class Library:
             # Editing any proposed value resets previous approval.
             if any(v[k]!=before.get(k,'') for k in allowed if k!='approved'):v['approved']=False
             v['year_sources']=before.get('year_sources',[]) if v['year']==before.get('year','') else []
+            v['provider_sources']=(before.get('provider_sources',[]) if all(v[k]==before.get(k,'') for k in ('title','filename')) else [])
             v['identity']=self.identity(self.rows[pid]); self.decisions[pid]=v;self.save()
             return self.decorated(pid)
 
@@ -525,6 +629,58 @@ class Library:
                               'suggested':corrections, 'notes':notes, 'approved':False}
                 changes.append(staged_now)
         return {'staged':changes,'skipped':skipped,'verified':verified}
+
+    def stage_metadata(self, ids, kind, order='aired'):
+        if kind not in ('title','filename'):
+            raise ValueError('Only title and filename verification supported')
+        if order not in ('aired','dvd'):
+            raise ValueError('Unsupported episode order')
+        if not isinstance(ids,list) or not 1<=len(ids)<=50:
+            raise ValueError('Select 1–50 records per verification batch')
+        staged,skipped,verified=[],[],[]
+        for pid in dict.fromkeys(str(x) for x in ids):
+            with self.lock:
+                item=self.rows.get(pid)
+                identity=self.identity(item) if item else ''
+                prior=self.decisions.get(pid,{}).copy()
+            if not item:
+                skipped.append({'id':pid,'title':'Unknown','reason':'Not in current library'});continue
+            base={'id':pid,'title':item.get('plex_title') or 'Untitled',
+                  'current':(Path(item['file_path']).name if kind=='filename' and item.get('file_path') else item.get('plex_title') or ''),
+                  'kind':kind,'sources':[]}
+            if prior.get('approved'):
+                skipped.append({**base,'reason':'Already approved; revoke approval before replacing a proposal'});continue
+            if item['type']=='Show' and kind=='filename':
+                skipped.append({**base,'reason':'TV shows have no media filename; select episodes or movies'});continue
+            if item['type']=='Episode' and kind=='filename' and not item.get('file_path'):
+                skipped.append({**base,'reason':'Episode file path unavailable'});continue
+            choices,errors=batch_provider_candidates(item, order)
+            picked,reason=select_provider_media(item,choices)
+            with self.lock:
+                if pid not in self.rows or self.identity(self.rows[pid])!=identity:
+                    skipped.append({**base,'reason':'Library changed during lookup; refresh first'});continue
+                self.lookup[pid]=choices
+                if not picked:
+                    skipped.append({**base,'reason':reason,'provider_errors':errors,
+                                    'sources':[{'provider':str(c.get('provider') or ''),'title':str(c.get('title') or ''),
+                                                'year':str(c.get('year') or ''),'url':str(c.get('source_url') or '')}
+                                               for c in choices[:5]]});continue
+                suggested,why=verify_provider_batch(item,kind,picked)
+                meta={**base,'provider_title':picked['title'],'provider_year':picked['year'],
+                      'sources':picked['sources'],'provider_errors':errors}
+                if not suggested:
+                    verified.append({**meta,'reason':why});continue
+                old=self.decisions.get(pid,{})
+                if old.get(kind) and old[kind]!=suggested:
+                    skipped.append({**meta,'reason':'An existing proposal conflicts with this provider result; review manually',
+                                    'proposed':suggested});continue
+                if old.get(kind)==suggested:
+                    skipped.append({**meta,'reason':'This correction is already staged','proposed':suggested});continue
+                self.set_decision(pid,{kind:suggested})
+                self.decisions[pid]['provider_sources']=picked['sources']
+                self.save()
+                staged.append({**meta,'proposed':suggested,'changes':[kind],'approved':False})
+        return {'staged':staged,'skipped':skipped,'verified':verified}
 
     def export(self):
         output=io.StringIO(); w=csv.writer(output)
@@ -852,6 +1008,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(200,scan_confirmed_renames(body.get('renames')))
             if p=='/api/stage-years':
                 return self.json(200, LIB.stage_years(body.get('ids',[])))
+            if p=='/api/stage-metadata':
+                return self.json(200, LIB.stage_metadata(body.get('ids',[]),body.get('kind',''),body.get('order','aired')))
             if p=='/api/apply':
                 if body.get('confirm')!='APPLY':raise ValueError('Explicit confirmation required')
                 ids=body.get('ids',[])

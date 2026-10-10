@@ -63,6 +63,13 @@ Folder changes are **not available from a stale/imported CSV**: connect to the s
 
 **Verification:** 49 automated tests pass, including read-only SQL show-parent extraction, combined file/folder rename, collision handling, rollback simulation, episode-path updates, and folder-based scan requests. Browser assets were transpiled from the included Vite/TypeScript source and served locally. **This has not been exercised against the user's live Plex server, SSH filesystem, or Plex scan behavior.**
 
+
+### Verify & fix titles and filenames
+
+The library toolbar has two additional batch actions: **Verify & fix title** and **Verify & fix filename**. Each queries metadata providers first (TMDB if configured; otherwise Wikidata for movies; TVmaze for shows and episodes). The backend refuses ambiguous remakes, inconsistent provider titles, and unmatched episodes instead of guessing. Movie collection prefixes, such as `Star Wars: ...`, are preserved when intentionally present.
+
+Title actions stage a proposed **Plex metadata title**; filename actions stage a guarded **single-file rename** (movies and numbered episodes only). No filesystem change or Plex edit happens until the user opens the Proposals queue, reviews and approves the proposal, then presses **Apply approved**. Provider attribution is recorded with the proposal. Filename renames still require configured Allowed media directories and a subsequent user-requested Plex scan. Episode lookups use the selected **aired** or **DVD** order from the Review Desk. Confirm TVmaze's ordering against your files before approving, especially for shows with alternate broadcast/DVD orders. Film original release year and alternate/localized titles are not always identical across providers; investigate borderline results before approval.
+
 ## Architecture
 
 ```text

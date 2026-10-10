@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Plex Curator backend. Read-only DB; opt-in Plex/file writes."""
-import argparse, csv, io, json, os, re, tempfile, threading, time, urllib.parse, urllib.request, urllib.error, xml.etree.ElementTree as ET
+import argparse, csv, io, json, os, re, tempfile, threading, time, secrets, urllib.parse, urllib.request, urllib.error, xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from engine import DB_DEFAULT, import_csv, import_db, diagnose, file_title, filename_proposal, folder_proposal, derive_show_folders, tmdb_lookup, tvmaze_lookup, wikidata_lookup, normal_item, year_evidence, norm, similar
@@ -466,7 +466,7 @@ def verify_provider_batch(item, kind, selected):
 
 class Library:
     def __init__(self):
-        self.lock=threading.RLock(); self.rows={}; self.decisions={}; self.lookup={}; self.source='No library loaded'
+        self.lock=threading.RLock(); self.rows={}; self.decisions={}; self.lookup={}; self.previews={}; self.source='No library loaded'
         path=STATE/'decisions.json'
         if path.exists():
             try:self.decisions=json.loads(path.read_text())
@@ -475,7 +475,7 @@ class Library:
     def load(self,rows,source):
         with self.lock:
             self.rows={str(x['plex_id']):x for x in derive_show_folders(rows) if x.get('plex_id')}
-            self.source=source;self.lookup={}
+            self.source=source;self.lookup={};self.previews.clear()
             # Never reuse an approval after the row's identity changes.
             self.decisions={k:v for k,v in self.decisions.items() if k in self.rows and v.get('identity')==self.identity(self.rows[k])}
             self.save()
@@ -547,7 +547,7 @@ class Library:
             v['identity']=self.identity(self.rows[pid]); self.decisions[pid]=v;self.save()
             return self.decorated(pid)
 
-    def stage_years(self, ids):
+    def stage_years(self, ids, preview_only=False):
         if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
             raise ValueError('Select 1–50 entries per provider batch')
         changes, skipped, verified = [], [], []
@@ -620,17 +620,18 @@ class Library:
                     skipped.append({**meta, 'reason':'These provider-backed corrections are already staged',
                                     'suggested':corrections, 'notes':notes})
                     continue
-                self.set_decision(requested, updates)
-                self.decisions[requested]['year_sources'] = selection['sources']
-                self.decisions[requested]['approved'] = False
-                self.save()
+                if not preview_only:
+                    self.set_decision(requested, updates)
+                    self.decisions[requested]['year_sources'] = selection['sources']
+                    self.decisions[requested]['approved'] = False
+                    self.save()
                 staged_now = {**meta, 'old_year':str(item.get('year') or ''),
                               'new_year':target_year, 'changes':list(updates),
                               'suggested':corrections, 'notes':notes, 'approved':False}
                 changes.append(staged_now)
         return {'staged':changes,'skipped':skipped,'verified':verified}
 
-    def stage_metadata(self, ids, kind, order='aired'):
+    def stage_metadata(self, ids, kind, order='aired', preview_only=False):
         if kind not in ('title','filename'):
             raise ValueError('Only title and filename verification supported')
         if order not in ('aired','dvd'):
@@ -676,11 +677,88 @@ class Library:
                                     'proposed':suggested});continue
                 if old.get(kind)==suggested:
                     skipped.append({**meta,'reason':'This correction is already staged','proposed':suggested});continue
-                self.set_decision(pid,{kind:suggested})
-                self.decisions[pid]['provider_sources']=picked['sources']
-                self.save()
+                if not preview_only:
+                    self.set_decision(pid,{kind:suggested})
+                    self.decisions[pid]['provider_sources']=picked['sources']
+                    self.save()
                 staged.append({**meta,'proposed':suggested,'changes':[kind],'approved':False})
         return {'staged':staged,'skipped':skipped,'verified':verified}
+
+    def preview_verification(self, ids, kind, order='aired'):
+        """Provider lookups return a preview, not a persisted proposal."""
+        if kind not in ('year','title','filename'):raise ValueError('Invalid verification type')
+        if not isinstance(ids,list) or not 1<=len(ids)<=50:
+            raise ValueError('Select 1–50 entries per verification batch')
+        with self.lock:
+            self.previews={k:v for k,v in self.previews.items()
+                           if time.time()-v['created']<1200}
+        report=(self.stage_years(ids, preview_only=True) if kind=='year' else
+                self.stage_metadata(ids, kind, order, preview_only=True))
+        plan={}
+        with self.lock:
+            for row in report['staged']:
+                pid=row['id']
+                if pid not in self.rows:continue
+                updates=({k:row['suggested'][k] for k in row['changes']}
+                         if kind=='year' else {kind:row['proposed']})
+                plan[pid]={'identity':self.identity(self.rows[pid]),
+                           'prior':self.decisions.get(pid,{}).copy(),
+                           'updates':updates,'sources':row.get('sources',[]),
+                           'kind':kind,'display':row}
+            token=secrets.token_urlsafe(24)
+            self.previews[token]={'created':time.time(),'plan':plan}
+        return {'preview_token':token,'proposed':report['staged'],
+                'skipped':report['skipped'],'verified':report['verified']}
+
+    def commit_preview(self, token, ids):
+        """Save only selected proposals, rejecting stale review results."""
+        if not isinstance(token,str) or not isinstance(ids,list) or len(ids)>50:
+            raise ValueError('Invalid verification selection')
+        with self.lock:
+            preview=self.previews.pop(token,None)
+            if not preview or time.time()-preview['created']>1200:
+                raise ValueError('Verification preview expired. Run verification again.')
+            chosen=list(dict.fromkeys(str(x) for x in ids))
+            if any(pid not in preview['plan'] for pid in chosen):
+                raise ValueError('Selection includes a record outside the preview')
+            staged=[];skipped=[]
+            for pid in chosen:
+                candidate=preview['plan'][pid]
+                item=self.rows.get(pid)
+                if (not item or self.identity(item)!=candidate['identity'] or
+                    self.decisions.get(pid,{})!=candidate['prior']):
+                    skipped.append({'id':pid,'reason':'Proposal or library changed since preview; verify again'})
+                    continue
+                self.set_decision(pid,candidate['updates'])
+                field='year_sources' if candidate['kind']=='year' else 'provider_sources'
+                self.decisions[pid][field]=candidate['sources']
+                self.decisions[pid]['approved']=False
+                self.save()
+                staged.append(candidate['display'])
+            return {'staged':staged,'skipped':skipped}
+
+    def discard_preview(self, token):
+        with self.lock:self.previews.pop(token,None)
+        return {'discarded':True}
+
+    def remove_proposals(self, ids):
+        """Delete saved decisions without modifying Plex metadata or media."""
+        if not isinstance(ids,list) or not 1<=len(ids)<=250:
+            raise ValueError('Select 1–250 proposals to remove')
+        removed=[];skipped=[]
+        with self.lock:
+            for pid in dict.fromkeys(str(x) for x in ids):
+                if pid not in self.rows or pid not in self.decisions:
+                    skipped.append({'id':pid,'reason':'No saved proposal'});continue
+                old=self.decisions[pid]
+                if not any(old.get(k) for k in ('title','year','filename','folder','poster_url','poster_key','match_guid')):
+                    skipped.append({'id':pid,'reason':'No proposed changes'});continue
+                del self.decisions[pid]
+                removed.append({'id':pid,'title':self.rows[pid].get('plex_title','')})
+            if removed:
+                self.previews.clear()
+                self.save()
+        return {'removed':removed,'skipped':skipped}
 
     def export(self):
         output=io.StringIO(); w=csv.writer(output)
@@ -1006,10 +1084,16 @@ class Handler(BaseHTTPRequestHandler):
                                       'message':result['message']})
             if p=='/api/scan-renames':
                 return self.json(200,scan_confirmed_renames(body.get('renames')))
-            if p=='/api/stage-years':
-                return self.json(200, LIB.stage_years(body.get('ids',[])))
-            if p=='/api/stage-metadata':
-                return self.json(200, LIB.stage_metadata(body.get('ids',[]),body.get('kind',''),body.get('order','aired')))
+            if p=='/api/verify-preview':
+                return self.json(200, LIB.preview_verification(body.get('ids',[]),body.get('kind',''),body.get('order','aired')))
+            if p=='/api/verify-commit':
+                return self.json(200, LIB.commit_preview(body.get('token',''),body.get('ids',[])))
+            if p=='/api/verify-discard':
+                return self.json(200, LIB.discard_preview(body.get('token','')))
+            if p=='/api/remove-proposals':
+                return self.json(200, LIB.remove_proposals(body.get('ids',[])))
+            if p in ('/api/stage-years','/api/stage-metadata'):
+                raise ValueError('Use /api/verify-preview and explicitly commit selected proposals')
             if p=='/api/apply':
                 if body.get('confirm')!='APPLY':raise ValueError('Explicit confirmation required')
                 ids=body.get('ids',[])

@@ -70,6 +70,12 @@ The library toolbar has two additional batch actions: **Verify & fix title** and
 
 Title actions stage a proposed **Plex metadata title**; filename actions stage a guarded **single-file rename** (movies and numbered episodes only). No filesystem change or Plex edit happens until the user opens the Proposals queue, reviews and approves the proposal, then presses **Apply approved**. Provider attribution is recorded with the proposal. Filename renames still require configured Allowed media directories and a subsequent user-requested Plex scan. Episode lookups use the selected **aired** or **DVD** order from the Review Desk. Confirm TVmaze's ordering against your files before approving, especially for shows with alternate broadcast/DVD orders. Film original release year and alternate/localized titles are not always identical across providers; investigate borderline results before approval.
 
+### Verification previews and proposal removal
+
+**Verify & fix years**, **Verify & fix title**, and **Verify & fix filename** now run provider lookups in preview-only mode. Results display selectable suggestions, which are **not saved** unless the user clicks **Add selected to Proposals**. **Discard / Close** abandons the preview and leaves existing proposals unchanged. Previews expire after 20 minutes and cannot be committed twice; saving rechecks the Plex item identity and proposal state.
+
+The **Proposals** view now offers **Remove** beside each entry and **Remove selected proposals** for explicitly selected rows. The Review Desk also offers **Remove proposal**. Removal deletes only local Curator proposals and their approval status, never Plex metadata or media files; previously applied changes cannot be undone by removing a proposal. Individual approval and **Apply approved** are still required for real changes.
+
 ## Architecture
 
 ```text

@@ -235,3 +235,10 @@ body{min-width:0}
 
 .issue-tag.proposal{color:#8051b4;background:#f5edff}
 .year-review-open{margin-top:9px;min-height:34px}
+
+/* Verification results remain unsaved until the user explicitly adds them. */
+.preview-pick{display:flex;align-items:center;gap:8px;padding:9px 0;font-size:.85rem;font-weight:600;cursor:pointer;min-height:40px}
+.preview-pick input{width:18px;height:18px;accent-color:#e4af3b;cursor:pointer}
+.media-row .proposal-removal{justify-self:end;white-space:nowrap}
+.media-row .proposal-removal button{min-height:32px}
+@media(max-width:700px){.media-row .proposal-removal button{font-size:.72rem;padding:5px 8px}.preview-pick{min-height:44px}}

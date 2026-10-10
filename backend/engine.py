@@ -22,16 +22,20 @@ def clean_name(name: str) -> str:
 
 def file_title(item):
     path = item.get('file_path') or ''
-    if not path: return ''
+    if not path:
+        return ''
     filename = Path(path).stem
     if item.get('type') == 'Episode':
         match = EPISODE.search(filename)
         if match:
             return clean_name(filename[match.end():].lstrip(' -._'))
-        # Some non-broadcast libraries (including workout courses) use
-        # numbered tracks such as "10 - Max Cardio Conditioning.m4v".
-        # Recover the title, but never infer a season or episode index.
-        track = re.match(r'^\s*(\d{1,3})\s*[-–—.]\s+(.+?)\s*
+        # Some non-broadcast libraries use numbered tracks like
+        # "10 - Max Cardio Conditioning.m4v". Do not infer Plex indexes.
+        track = re.match(r'^\s*(\d{1,3})\s*[-–—.]\s+(.+?)\s*$', filename)
+        if track and int(track.group(1)) > 0:
+            return clean_name(track.group(2))
+        return ''
+    return clean_name(Path(path).parent.name) or clean_name(filename)
 
 
 def norm(s):

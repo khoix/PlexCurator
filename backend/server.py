@@ -3,7 +3,7 @@
 import argparse, csv, io, json, os, re, tempfile, threading, time, secrets, urllib.parse, urllib.request, urllib.error, xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from engine import DB_DEFAULT, import_csv, import_db, diagnose, file_title, filename_proposal, folder_proposal, derive_show_folders, tmdb_lookup, tvmaze_lookup, wikidata_lookup, normal_item, year_evidence, norm, similar
+from engine import DB_DEFAULT, import_csv, import_db, diagnose, file_title, filename_proposal, folder_proposal, derive_show_folders, tmdb_lookup, tvmaze_lookup, wikidata_lookup, normal_item, year_evidence, norm, similar, clean_name, EPISODE
 from ssh_transport import SSHTransport
 from remote_bridge import media_rename, folder_and_file_rename
 
@@ -384,12 +384,15 @@ def select_provider_media(item, candidates):
         return None, 'Unsupported media type'
     plex=str(item.get('plex_title') or '')
     disk=file_title(item) if kind in ('Movie','Episode') else ''
+    filename_clue=filename_title_fallback(item)
     if kind=='Episode':
         # The number/ordering identifies an episode; refuse when neither
         # Plex nor filename resembles the TVmaze episode title.
         if not (item.get('season_number') and item.get('episode_number')) and not re.search(r'(?i)s\d{1,2}e\d{1,3}',item.get('file_path') or ''):
             return None, 'No reliable SxxEyy episode numbering for lookup'
-    labels=[x for x in (plex,disk) if x]
+    # Provider-first matching also considers the actual filename when a movie
+    # directory is mislabeled; this prevents unnecessary unverified fallbacks.
+    labels=list(dict.fromkeys(x for x in (plex,disk,filename_clue) if x))
     if not labels:return None,'No title in Plex or media path'
     strong=[]
     for c in candidates:
@@ -463,6 +466,36 @@ def verify_provider_batch(item, kind, selected):
     return '','Unsupported batch verification kind'
 
 
+
+def filename_title_fallback(item):
+    """Local filename clue, never a provider-verified title.
+
+    Movies derive titles from file basenames (not parent folders). Episodes
+    require SxxEyy numbering and a nonempty name after the number.
+    """
+    media_type = item.get('type')
+    location = str(item.get('file_path') or '')
+    if media_type not in ('Movie', 'Episode') or not location:
+        return ''
+    stem = Path(location).stem
+    if media_type == 'Episode':
+        episode = EPISODE.search(stem)
+        if not episode:
+            return ''
+        stem = stem[episode.end():].lstrip(' -._')
+    title = clean_name(stem).strip()
+    key = norm(title)
+    if len(key) < 2 or key in {'untitled', 'unknown', 'tba', 'episode', 'movie',
+                              'film', 'sample', 'trailer', 'extras', 'extra', 'video'}:
+        return ''
+    if re.fullmatch(r'(?i)(?:episode|part|chapter|season|disc|disk)[\s._-]*\d+', title):
+        return ''
+    if re.search(r'(?i)\bS\d{1,2}\s*E\d{1,3}\b', title):
+        return ''
+    if title.lower().startswith(('www.', 'http://', 'https://')):
+        return ''
+    return title
+
 class Library:
     def __init__(self):
         self.lock=threading.RLock(); self.rows={}; self.decisions={}; self.lookup={}; self.previews={}; self.source='No library loaded'
@@ -486,6 +519,10 @@ class Library:
 
     def decorated(self, pid):
         item=self.rows[pid].copy();item['diagnostic']=diagnose(item)
+        guessed=filename_title_fallback(item)
+        if guessed:
+            suggestion,_=verify_provider_batch(item,'title',{'title':guessed,'year':''})
+            if suggestion:item['diagnostic']['filename_title_suggestion']=suggestion
         item['decision']=self.decisions.get(pid,{'approved':False,'title':'','year':'','filename':'','poster_url':'','poster_key':'','match_guid':'','folder':''})
         item['candidates']=self.lookup.get(pid,[])
         return item
@@ -657,6 +694,13 @@ class Library:
                 skipped.append({**base,'reason':'Episode file path unavailable'});continue
             choices,errors=batch_provider_candidates(item, order)
             picked,reason=select_provider_media(item,choices)
+            # Title verification may offer a local, unverified filename clue
+            # only when no trustworthy provider candidate was selected.
+            filename_guess=(filename_title_fallback(item)
+                            if kind=='title' and not picked else '')
+            filename_based=bool(filename_guess)
+            if filename_based:
+                picked={'title':filename_guess,'year':'','sources':[]}
             with self.lock:
                 if pid not in self.rows or self.identity(self.rows[pid])!=identity:
                     skipped.append({**base,'reason':'Library changed during lookup; refresh first'});continue
@@ -667,10 +711,19 @@ class Library:
                                                 'year':str(c.get('year') or ''),'url':str(c.get('source_url') or '')}
                                                for c in choices[:5]]});continue
                 suggested,why=verify_provider_batch(item,kind,picked)
-                meta={**base,'provider_title':picked['title'],'provider_year':picked['year'],
+                meta={**base,'provider_title':'' if filename_based else picked['title'],
+                      'provider_year':picked['year'],
+                      'filename_title':filename_guess if filename_based else '',
+                      'evidence':'filename' if filename_based else 'provider',
+                      'lookup_reason':reason if filename_based else '',
                       'sources':picked['sources'],'provider_errors':errors}
                 if not suggested:
-                    verified.append({**meta,'reason':why});continue
+                    if filename_based:
+                        skipped.append({**meta,'reason':'Plex title agrees with the filename, '
+                                        'but no provider match was verified ('+reason+')'})
+                    else:
+                        verified.append({**meta,'reason':why})
+                    continue
                 old=self.decisions.get(pid,{})
                 if old.get(kind) and old[kind]!=suggested:
                     skipped.append({**meta,'reason':'An existing proposal conflicts with this provider result; review manually',

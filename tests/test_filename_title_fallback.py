@@ -59,6 +59,31 @@ class FilenameFallbackTests(unittest.TestCase):
             report=self.library.stage_metadata(['501'],'title',preview_only=True)
         self.assertEqual(report['staged'][0]['evidence'],'provider')
 
+    def test_workout_numbered_track_title(self):
+        ep=engine.normal_item({'plex_id':'11178','type':'Episode','plex_title':'Untitled',
+            'series_title':'Beachbody Com Shaun T Insanity Deluxe',
+            'file_path':'/media/Series/Beachbody.com - Shaun T - Insanity Deluxe/10 - Max Cardio Conditioning.m4v',
+            'guid':'local://11178'})
+        self.assertEqual(engine.file_title(ep),'Max Cardio Conditioning')
+        self.assertEqual(server.filename_title_fallback(ep),'Max Cardio Conditioning')
+        self.library.load([ep],'SSH: test')
+        with patch.object(server,'batch_provider_candidates',return_value=([],[])):
+            review=self.library.stage_metadata(['11178'],'title',preview_only=True)
+        self.assertEqual(review['staged'][0]['proposed'],'Max Cardio Conditioning')
+        self.assertEqual(review['staged'][0]['evidence'],'filename')
+        self.assertFalse(review['staged'][0]['approved'])
+        self.assertEqual(review['staged'][0]['sources'],[])
+        self.assertEqual(self.library.decisions,{})
+
+    def test_numbered_track_must_have_non_generic_name(self):
+        ep=engine.normal_item({'type':'Episode','plex_title':'Untitled',
+            'file_path':'/media/Series/S/Season 1/10 - Untitled.m4v'})
+        self.assertEqual(server.filename_title_fallback(ep),'')
+        ep['file_path']='/media/Series/S/Season 1/10.m4v'
+        self.assertEqual(server.filename_title_fallback(ep),'')
+        ep['file_path']='/media/Series/S/Season 1/2016 - Actual Title.m4v'
+        self.assertEqual(server.filename_title_fallback(ep),'')
+
     def test_no_filename_guess_for_shows(self):
         self.assertEqual(server.filename_title_fallback({'type':'Show','plex_title':'Show','file_path':''}),'')
 

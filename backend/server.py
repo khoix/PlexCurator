@@ -389,7 +389,7 @@ def select_provider_media(item, candidates):
         # The number/ordering identifies an episode; refuse when neither
         # Plex nor filename resembles the TVmaze episode title.
         if not (item.get('season_number') and item.get('episode_number')) and not re.search(r'(?i)s\d{1,2}e\d{1,3}',item.get('file_path') or ''):
-            return None, 'No reliable SxxEyy episode numbering for lookup'
+            return None, 'Provider episode lookup requires SxxEyy or Plex season/episode indexes; a numbered-track filename may still provide an unverified title'
     # Provider-first matching also considers the actual filename when a movie
     # directory is mislabeled; this prevents unnecessary unverified fallbacks.
     labels=list(dict.fromkeys(x for x in (plex,disk,filename_clue) if x))
@@ -479,11 +479,11 @@ def filename_title_fallback(item):
         return ''
     stem = Path(location).stem
     if media_type == 'Episode':
-        episode = EPISODE.search(stem)
-        if not episode:
-            return ''
-        stem = stem[episode.end():].lstrip(' -._')
-    title = clean_name(stem).strip()
+        # Reuse the file-title parser, which recognizes both SxxEyy and
+        # numbered tracks; track numbers are not mapped to Plex indexes.
+        title = file_title(item).strip()
+    else:
+        title = clean_name(stem).strip()
     key = norm(title)
     if len(key) < 2 or key in {'untitled', 'unknown', 'tba', 'episode', 'movie',
                               'film', 'sample', 'trailer', 'extras', 'extra', 'video'}:

@@ -448,10 +448,9 @@ def verify_provider_batch(item, kind, selected):
     title=selected['title']
     if kind=='title':
         if item['type']=='Movie': title=_collection_title(item,title)
-        if title==str(item.get('plex_title') or ''):
-            return '', 'Plex title already matches verified provider title'
-        # Do not replace intentional punctuation/known alternate without manual
-        # approval: any proposal still requires explicit individual review.
+        current=str(item.get('plex_title') or '')
+        if title==current or (re.findall(r'[^\W_]+', title.casefold()) == re.findall(r'[^\W_]+', current.casefold())):
+            return '', 'Plex title already matches provider (ignoring punctuation and capitalization)'
         return title,''
     if kind=='filename':
         if item['type']=='Show':return '','Series folders have no media filename; use a movie or episode'
@@ -647,6 +646,7 @@ class Library:
             if not item:
                 skipped.append({'id':pid,'title':'Unknown','reason':'Not in current library'});continue
             base={'id':pid,'title':item.get('plex_title') or 'Untitled',
+                  'type':item.get('type') or '',
                   'current':(Path(item['file_path']).name if kind=='filename' and item.get('file_path') else item.get('plex_title') or ''),
                   'kind':kind,'sources':[]}
             if prior.get('approved'):
@@ -771,6 +771,52 @@ class Library:
 
 
 LIB=Library()
+
+def refresh_live_item(pid):
+    """Refresh one record directly from Plex API, no full SQLite reload.
+
+    Only data actually present in Plex's response is updated. A changed record
+    identity invalidates any staged proposal for this item; nothing is applied.
+    """
+    with LIB.lock:
+        previous=LIB.rows.get(str(pid))
+        if not previous:raise ValueError('Unknown Plex ID')
+        old_identity=LIB.identity(previous)
+        old=previous.copy()
+    live=plex_metadata(pid)
+    updated=old.copy()
+    mappings={'title':'plex_title', 'year':'year', 'guid':'guid',
+              'originalTitle':'original_title', 'summary':'summary_excerpt',
+              'grandparentTitle':'series_title', 'index':'episode_number',
+              'parentIndex':'season_number'}
+    for src,dst in mappings.items():
+        if src in live and live[src] is not None:
+            updated[dst]=str(live[src])[:300] if dst=='summary_excerpt' else str(live[src])
+    # Media and Part are nested in JSON responses, but omitted from Plex XML.
+    media=live.get('Media') or []
+    if isinstance(media,dict):media=[media]
+    for media_item in media:
+        if not isinstance(media_item,dict):continue
+        parts=media_item.get('Part') or []
+        if isinstance(parts,dict):parts=[parts]
+        for part in parts:
+            if isinstance(part,dict) and part.get('file'):
+                updated['file_path']=str(part['file']);break
+        if updated.get('file_path')!=old.get('file_path'):break
+    changed=[key for key in updated if updated[key]!=old.get(key)]
+    with LIB.lock:
+        current=LIB.rows.get(str(pid))
+        if not current or LIB.identity(current)!=old_identity:
+            raise ValueError('Record changed during Plex request; refresh again')
+        LIB.rows[str(pid)]=updated
+        invalidated=(LIB.identity(updated)!=old_identity and str(pid) in LIB.decisions)
+        if invalidated:
+            LIB.decisions.pop(str(pid),None)
+            LIB.save()
+        LIB.lookup.pop(str(pid),None)
+        return {'item':LIB.decorated(str(pid)), 'changed_fields':changed,
+                'proposal_invalidated':invalidated}
+
 
 def apply_one(pid):
     with LIB.lock:
@@ -1019,11 +1065,13 @@ class Handler(BaseHTTPRequestHandler):
                 rows=import_csv(body.get('csv',''));LIB.load(rows,'Uploaded CSV');return self.json(200,{'count':len(rows)})
             if p=='/api/load-db':
                 if SSH.config:
-                    rows=[normal_item(x) for x in SSH.call({'op':'load','db':SSH.config['db']})['rows']]
+                    rows=[normal_item(x) for x in SSH.call({'op':'refresh','db':SSH.config['db']})['rows']]
                     LIB.load(rows,f"SSH: {SSH.config['host']} (read-only SQLite snapshot)")
                 else:
-                    rows=import_db(PLEX_DB);LIB.load(rows,'Local Plex SQLite (read-only snapshot)')
+                    rows=import_db(PLEX_DB,copy_first=False);LIB.load(rows,'Local Plex SQLite (read-only transaction)')
                 return self.json(200,{'count':len(rows)})
+            if p=='/api/refresh-item':
+                return self.json(200,refresh_live_item(str(body.get('id',''))))
             if p=='/api/lookup':
                 pid=str(body.get('id',''));provider=body.get('provider','all');order=body.get('order','aired')
                 if pid not in LIB.rows:raise ValueError('Unknown ID')

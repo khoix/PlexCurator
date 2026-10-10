@@ -76,6 +76,12 @@ Title actions stage a proposed **Plex metadata title**; filename actions stage a
 
 The **Proposals** view now offers **Remove** beside each entry and **Remove selected proposals** for explicitly selected rows. The Review Desk also offers **Remove proposal**. Removal deletes only local Curator proposals and their approval status, never Plex metadata or media files; previously applied changes cannot be undone by removing a proposal. Individual approval and **Apply approved** are still required for real changes.
 
+### Targeted Plex refresh and fast full-library refresh
+
+**Refresh DB** uses a read-only SQLite transaction on the remote Plex server rather than copying the complete Plex database. **Refresh from Plex** in the Review Desk queries only the selected record through the tunneled Plex API, updates fields returned by Plex, and does not modify any files. If the record's identity changes, its existing proposal/approval is invalidated to avoid applying stale edits. Neither action initiates a Plex filesystem scan or metadata-provider search.
+
+**Verify & fix title** no longer proposes punctuation-only or capitalization-only differences. In the episode review, the provider title and episode's first-air year are displayed separately; neither is appended to the saved Plex title.
+
 ## Architecture
 
 ```text

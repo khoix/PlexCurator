@@ -224,15 +224,16 @@ def import_csv(csv_text):
     return derive_show_folders(list({r['plex_id']:normal_item(r) for r in rows if r.get('plex_id')}.values()))
 
 
-def import_db(db_path):
+def import_db(db_path, copy_first=True):
     path=Path(db_path)
     if not path.is_file(): raise ValueError('Plex database not found; set PLEX_DB to its exact path')
     # SQLite backup reads a consistent WAL-aware snapshot; source DB is never modified.
     uri='file:'+urllib.parse.quote(str(path))+'?mode=ro'
     src=sqlite3.connect(uri, uri=True, timeout=10)
-    dst=sqlite3.connect(':memory:')
+    dst=sqlite3.connect(':memory:') if copy_first else src
     try:
-        src.backup(dst)
+        if copy_first: src.backup(dst)
+        else: src.execute('BEGIN')  # consistent read-only transaction for fast refresh
         dst.row_factory=sqlite3.Row
         sql='''SELECT m.id AS plex_id,
             CASE m.metadata_type WHEN 1 THEN 'Movie' WHEN 2 THEN 'Show' WHEN 4 THEN 'Episode' END AS type,
@@ -264,7 +265,9 @@ def import_db(db_path):
                 for item in data:item['collections']=collection_map.get(item['plex_id'],'')
             except sqlite3.OperationalError:pass
         return derive_show_folders(data)
-    finally: src.close(); dst.close()
+    finally:
+        if dst is not src: dst.close()
+        src.close()
 
 
 def json_get(url, headers=None):

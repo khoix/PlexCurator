@@ -299,3 +299,9 @@ body{min-width:0}
   }
   .media-row > .proposal-removal button { font-size: 10px; padding: 5px 6px; }
 }
+
+
+/* Individual Plex refresh action in the review desk. */
+.inspector-head-actions{display:flex;align-items:center;gap:6px;min-width:0}
+.inspector-head-actions .btn{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;min-height:34px}
+@media(max-width:520px){.inspector-head-actions .btn span{display:none}.inspector-head-actions .btn{min-width:36px;justify-content:center}}

@@ -18,15 +18,16 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 
 
-def rows_from_db(db_path):
+def rows_from_db(db_path, copy_first=True):
     path = pathlib.Path(db_path)
     if not path.is_file():
         raise ValueError('Plex database not found or not readable: ' + str(path))
     uri = 'file:' + urllib.parse.quote(str(path)) + '?mode=ro'
     source = sqlite3.connect(uri, uri=True, timeout=15)
-    dest = sqlite3.connect(':memory:')
+    dest = sqlite3.connect(':memory:') if copy_first else source
     try:
-        source.backup(dest)
+        if copy_first: source.backup(dest)
+        else: source.execute('BEGIN')  # consistent read-only transaction, no full DB copy
         dest.row_factory = sqlite3.Row
         sql = '''SELECT m.id AS plex_id,
              CASE m.metadata_type WHEN 1 THEN 'Movie' WHEN 2 THEN 'Show' WHEN 4 THEN 'Episode' END AS type,
@@ -57,8 +58,8 @@ def rows_from_db(db_path):
                 pass
         return rows
     finally:
+        if dest is not source: dest.close()
         source.close()
-        dest.close()
 
 
 def rename_without_overwrite(src, target):
@@ -269,6 +270,8 @@ def perform(args):
     op = args.get('op')
     if op == 'load':
         return {'rows': rows_from_db(args['db'])}
+    if op == 'refresh':
+        return {'rows': rows_from_db(args['db'], copy_first=False)}
     if op == 'token':
         path = pathlib.Path(args['db']).parent.parent.parent / 'Preferences.xml'
         try:

@@ -232,3 +232,6 @@ body{min-width:0}
 .year-review-desc { font-size:.84rem; font-weight:500; line-height:1.5; }
 .year-sources { font-size:.78rem; line-height:1.5; margin:8px 0; }
 @media(max-width:520px){ .year-values { grid-template-columns:1fr 1fr; } }
+
+.issue-tag.proposal{color:#8051b4;background:#f5edff}
+.year-review-open{margin-top:9px;min-height:34px}

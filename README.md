@@ -27,6 +27,14 @@ To restrict the app to the workstation, use `./run.sh --host 127.0.0.1` or set `
 
 **Verify & fix years** queries Wikidata for movies, TVmaze for TV shows, and optionally TMDB when `TMDB_READ_TOKEN` is set. Matches are validated by title, not the existing Plex year; movie folder/filename years remain clues only. Ambiguous remakes, conflicting provider results, and low-confidence matches are skipped. Every proposed release year is accompanied by provider links, remains **pending separate approval**, and is not applied until the user explicitly clicks **Apply approved**. Processing shows progress in batches and reports skipped records. Episodes are skipped; no filenames or directories are automatically renamed.
 
+### Discover and review proposals
+
+**Verify & fix years** compares metadata provider release years to Plex metadata, filenames, and movie folders, then saves eligible corrections as *proposals* in `data/decisions.json`. It does not edit Plex or files until each proposal is approved and **Apply approved** is used.
+
+In the results modal, **Open proposal** jumps directly to a selected item. The bottom **Review proposals** action opens the **Proposals** section with its first record selected (or **Close report** if no corrections were staged). The sidebar **Proposals** view persists across page reloads and includes both pending approval and approved-but-unapplied edits, so you can approve and then apply within one view. Items with staged proposals are also visible under the default **Issues only** filter and labeled **Pending approval**.
+
+If the report says **0 pending**, no new proposed corrections were staged: the results were already aligned, conflicted with an existing proposal, or provider identity was uncertain. No Plex edits were performed. An exact Plex ID can be located using a search such as `#12345`.
+
 ### v0.8 — desktop, tablet, and mobile web interface
 
 The same Vite web UI now adapts to wide desktop monitors, tablets, and narrow phones (tested at **1600×900**, **820×1000**, **390×844**, and **320×700**). Desktop retains its three-column workspace. On tablets and phones:

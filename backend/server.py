@@ -392,17 +392,30 @@ class Library:
         q=(filters.get('q',[''])[0]).lower().strip(); media_type=filters.get('type',['all'])[0]
         flagged=filters.get('flagged',['false'])[0]=='true';offset=max(0,int(filters.get('offset',['0'])[0]));limit=min(250,max(1,int(filters.get('limit',['80'])[0])))
         with self.lock:
-            items=[];stats={'Movie':0,'Show':0,'Episode':0,'flagged':0,'reviewed':0}
+            items=[];stats={'Movie':0,'Show':0,'Episode':0,'flagged':0,'reviewed':0,'proposals':0}
             for pid, row in self.rows.items():
                 stats[row['type']]=stats.get(row['type'],0)+1
                 issues=diagnose(row)['issues']
                 if issues:stats['flagged']+=1
-                if self.decisions.get(pid,{}).get('approved'): stats['reviewed']+=1
-                if media_type!='all' and row['type']!=media_type:continue
-                if flagged and not issues:continue
-                if q and q not in ' '.join(str(row.get(k,'')) for k in ['plex_id','plex_title','series_title','file_path','guid']).lower():continue
+                decision=self.decisions.get(pid,{})
+                is_proposal=any(decision.get(field) for field in (
+                    'title','year','filename','folder','poster_url','poster_key','match_guid'))
+                if is_proposal:stats['proposals']+=1
+                if decision.get('approved'): stats['reviewed']+=1
+                if media_type=='proposals':
+                    if not is_proposal:continue
+                elif media_type!='all' and row['type']!=media_type:continue
+                if flagged and not issues and not is_proposal:continue
+                if q.startswith('#'):
+                    if pid!=q[1:]:continue
+                elif q and q not in ' '.join(str(row.get(k,'')) for k in
+                                           ['plex_id','plex_title','series_title','file_path','guid']).lower():continue
                 items.append(pid)
-            items.sort(key=lambda pid:(0 if diagnose(self.rows[pid])['issues'] else 1, (self.rows[pid].get('series_title') or self.rows[pid].get('plex_title') or '').lower(),int(pid)))
+            items.sort(key=lambda pid:(0 if any(self.decisions.get(pid,{}).get(field)
+                                  for field in ('title','year','filename','folder','poster_url','poster_key','match_guid'))
+                                  else 1 if diagnose(self.rows[pid])['issues'] else 2,
+                                  (self.rows[pid].get('series_title') or
+                                   self.rows[pid].get('plex_title') or '').lower(),int(pid)))
             return {'items':[self.decorated(x) for x in items[offset:offset+limit]],'total':len(items),'stats':stats,'source':self.source}
 
     def set_decision(self,pid,body):
